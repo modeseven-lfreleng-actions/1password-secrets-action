@@ -21,7 +21,6 @@ import (
 
 // Action represents the main action interface
 type Action interface {
-	// Run executes the action
 	Run(ctx context.Context) error
 
 	// ValidateInputs validates the action inputs
@@ -77,24 +76,20 @@ type Runner struct {
 
 // NewRunner creates a new action runner with the given configuration
 func NewRunner(cfg *config.Config) (*Runner, error) {
-	// Create CLI manager config
 	managerConfig := &cli.Config{
 		Version: "latest",
 	}
 
-	// Create CLI manager
 	manager, err := cli.NewManager(managerConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create CLI manager: %w", err)
 	}
 
-	// Create secure token
 	secureToken, err := security.NewSecureStringFromString(cfg.Token)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create secure token: %w", err)
 	}
 
-	// Create CLI client config
 	clientConfig := &cli.ClientConfig{
 		Token: secureToken,
 	}
@@ -104,7 +99,6 @@ func NewRunner(cfg *config.Config) (*Runner, error) {
 		clientConfig.Account = userID
 	}
 
-	// Create real CLI client
 	client, err := cli.NewClient(manager, clientConfig)
 	if err != nil {
 		_ = secureToken.Destroy()
@@ -131,12 +125,10 @@ func (r *Runner) Run(ctx context.Context) (*Result, error) {
 		return nil, fmt.Errorf("configuration is required")
 	}
 
-	// Validate configuration
 	if err := r.config.Validate(); err != nil {
 		return nil, fmt.Errorf("configuration validation failed: %w", err)
 	}
 
-	// Create result
 	result := &Result{
 		Success:      true,
 		Secrets:      make(map[string]string),
@@ -152,7 +144,6 @@ func (r *Runner) Run(ctx context.Context) (*Result, error) {
 		return nil, fmt.Errorf("authentication failed: %w", err)
 	}
 
-	// Parse the record specification using the unified parser
 	if r.config.Record == "" {
 		return nil, fmt.Errorf("record specification is required")
 	}
@@ -165,84 +156,102 @@ func (r *Runner) Run(ctx context.Context) (*Result, error) {
 
 	// Check if this is multiple secrets or single secret
 	if len(secretMapping) > 1 || (len(secretMapping) == 1 && !secretMapping.hasKey("secret")) {
-		// Handle multiple secrets - retrieve each one individually since CLI client doesn't have batch GetSecrets
-		secrets := make(map[string]string)
-		for key, location := range secretMapping {
-			vault := location.Vault
-			if vault == "" {
-				vault = r.config.Vault
-			}
-
-			// Get individual secret
-			secret, err := r.client.GetSecret(ctx, vault, location.Item, location.Field)
-			if err != nil {
-				return nil, fmt.Errorf("failed to retrieve secret %s: %w", key, err)
-			}
-
-			secrets[key] = secret.String()
-		}
-
-		// Set results based on return type
-		result.SecretsCount = len(secrets)
-		for key, value := range secrets {
-			result.Secrets[key] = value
-
-			// Apply return type logic
-			switch r.config.ReturnType {
-			case "output":
-				result.Outputs[key] = value
-			case "env":
-				result.Environment[key] = value
-			case "both":
-				result.Outputs[key] = value
-				result.Environment[key] = value
-			default:
-				result.Outputs[key] = value // default to output
-			}
+		if err := r.retrieveMultipleSecrets(ctx, secretMapping, result); err != nil {
+			return nil, err
 		}
 	} else {
-		// Handle single secret
-		var location SecretLocation
-		if secretLocation, exists := secretMapping["secret"]; exists {
-			location = secretLocation
-		} else {
-			// If there's only one key and it's not "secret", use that
-			for _, loc := range secretMapping {
-				location = loc
-				break
-			}
+		if err := r.retrieveSingleSecret(ctx, secretMapping, result); err != nil {
+			return nil, err
 		}
+	}
 
+	return result, nil
+}
+
+// retrieveMultipleSecrets fetches each mapped secret individually and populates
+// the result according to the configured return type.
+func (r *Runner) retrieveMultipleSecrets(ctx context.Context, secretMapping SecretMapping, result *Result) error {
+	// Handle multiple secrets - retrieve each one individually since CLI client doesn't have batch GetSecrets
+	secrets := make(map[string]string)
+	for key, location := range secretMapping {
 		vault := location.Vault
 		if vault == "" {
 			vault = r.config.Vault
 		}
 
-		// Retrieve single secret
 		secret, err := r.client.GetSecret(ctx, vault, location.Item, location.Field)
 		if err != nil {
-			return nil, fmt.Errorf("failed to retrieve secret: %w", err)
+			return fmt.Errorf("failed to retrieve secret %s: %w", key, err)
 		}
 
-		// Set results based on return type
-		result.SecretsCount = 1
-		result.Secrets["value"] = secret.String()
+		secrets[key] = secret.String()
+		// GetSecret results are caller-owned; release the locked memory once
+		// the plaintext has been copied out.
+		_ = secret.Destroy()
+	}
 
-		// Apply return type logic
-		switch r.config.ReturnType {
-		case "output":
-			result.Outputs["value"] = secret.String()
-		case "env":
-			result.Environment["value"] = secret.String()
-		case "both":
-			result.Outputs["value"] = secret.String()
-			result.Environment["value"] = secret.String()
-		default:
-			result.Outputs["value"] = secret.String() // default to output
+	// Set results based on return type
+	result.SecretsCount = len(secrets)
+	for key, value := range secrets {
+		result.Secrets[key] = value
+		r.applyReturnType(result, key, value)
+	}
+
+	return nil
+}
+
+// retrieveSingleSecret resolves the sole mapped secret and populates the result
+// according to the configured return type.
+func (r *Runner) retrieveSingleSecret(ctx context.Context, secretMapping SecretMapping, result *Result) error {
+	var location SecretLocation
+	if secretLocation, exists := secretMapping["secret"]; exists {
+		location = secretLocation
+	} else {
+		// If there's only one key and it's not "secret", use that
+		for _, loc := range secretMapping {
+			location = loc
+			break
 		}
 	}
 
-	return result, nil
+	vault := location.Vault
+	if vault == "" {
+		vault = r.config.Vault
+	}
+
+	// Retrieve single secret
+	secret, err := r.client.GetSecret(ctx, vault, location.Item, location.Field)
+	if err != nil {
+		return fmt.Errorf("failed to retrieve secret: %w", err)
+	}
+
+	value := secret.String()
+	// GetSecret results are caller-owned; release the locked memory once
+	// the plaintext has been copied out.
+	_ = secret.Destroy()
+
+	// Set results based on return type
+	result.SecretsCount = 1
+	result.Secrets["value"] = value
+	r.applyReturnType(result, "value", value)
+
+	return nil
+}
+
+// applyReturnType routes a secret value to outputs and/or environment variables
+// based on the runner's configured return type.
+func (r *Runner) applyReturnType(result *Result, key, value string) {
+	switch r.config.ReturnType {
+	case config.ReturnTypeOutput:
+		result.Outputs[key] = value
+	case config.ReturnTypeEnv:
+		result.Environment[key] = value
+	case config.ReturnTypeBoth:
+		result.Outputs[key] = value
+		result.Environment[key] = value
+	default:
+		result.Outputs[key] = value // default to output
+	}
 }
 
 // Cleanup cleans up runner resources
@@ -387,12 +396,10 @@ func (m *MockAction) validateSecurityInputs() error {
 		return fmt.Errorf("invalid token: %w", err)
 	}
 
-	// Validate vault name
 	if err := validator.ValidateVault(m.config.Vault); err != nil {
 		return fmt.Errorf("invalid vault: %w", err)
 	}
 
-	// Validate record
 	if _, err := validator.ParseRecord(m.config.Record); err != nil {
 		return fmt.Errorf("invalid record: %w", err)
 	}
@@ -418,7 +425,6 @@ func ParseSecretRecord(record string) (SecretMapping, error) {
 		return parseJSONMapping(yamlMapping)
 	}
 
-	// Parse as simple "item/field" format
 	parts := strings.Split(record, "/")
 	if len(parts) != 2 {
 		return nil, fmt.Errorf("invalid record format: expected 'item/field', JSON, or YAML")

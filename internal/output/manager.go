@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/modeseven-lfreleng-actions/1password-secrets-action/internal/config"
 	"github.com/modeseven-lfreleng-actions/1password-secrets-action/internal/logger"
@@ -93,7 +94,6 @@ func NewManager(cfg *config.Config, log *logger.Logger,
 	// Override return type from main config
 	outputConfig.ReturnType = cfg.ReturnType
 
-	// Initialize GitHub Actions integration
 	github, err := NewGitHubActions(log, &GitHubConfig{
 		OutputFile:    cfg.GitHubOutput,
 		EnvFile:       cfg.GitHubEnv,
@@ -105,7 +105,6 @@ func NewManager(cfg *config.Config, log *logger.Logger,
 		return nil, fmt.Errorf("failed to initialize GitHub Actions integration: %w", err)
 	}
 
-	// Initialize validator
 	validatorConfig := DefaultValidatorConfig()
 	validatorConfig.MaxOutputs = outputConfig.MaxOutputs
 	validatorConfig.MaxValueLength = outputConfig.MaxValueLength
@@ -147,141 +146,28 @@ func (m *Manager) ProcessSecrets(result *secrets.BatchResult) (*Result, error) {
 		"error_count", result.ErrorCount,
 		"return_type", m.config.ReturnType)
 
-	// Validate we can proceed with outputs
 	if err := m.validateOutputCapability(); err != nil {
 		outputResult.Errors = append(outputResult.Errors, err)
 		return outputResult, err
 	}
 
-	// Process successful secrets
-	var pendingOutputs []Operation
-	var pendingEnvVars []Operation
-
-	for key, secretResult := range result.Results {
-		if secretResult.Error != nil {
-			m.logger.Debug("Skipping output for failed secret",
-				"key", key, "error", secretResult.Error)
-			outputResult.Errors = append(outputResult.Errors,
-				fmt.Errorf("secret '%s' failed: %w", key, secretResult.Error))
-			continue
-		}
-
-		if secretResult.Value == nil || secretResult.Value.IsEmpty() {
-			m.logger.Warn("Skipping output for empty secret", "key", key)
-			continue
-		}
-
-		// Validate output name
-		if err := m.validator.ValidateOutputName(key); err != nil {
-			outputResult.Errors = append(outputResult.Errors,
-				fmt.Errorf("invalid output name '%s': %w", key, err))
-			continue
-		}
-
-		// Validate secret value
-		secretValue := secretResult.Value.String()
-		if err := m.validator.ValidateOutputValue(secretValue); err != nil {
-			outputResult.Errors = append(outputResult.Errors,
-				fmt.Errorf("invalid output value for '%s': %w", key, err))
-			continue
-		}
-
-		// Process the value
-		processedValue, err := m.processOutputValue(secretValue)
-		if err != nil {
-			outputResult.Errors = append(outputResult.Errors,
-				fmt.Errorf("failed to process value for '%s': %w", key, err))
-			continue
-		}
-
-		// Create secure string for the value
-		secureValue, err := security.NewSecureStringFromString(processedValue)
-		if err != nil {
-			outputResult.Errors = append(outputResult.Errors,
-				fmt.Errorf("failed to create secure value for '%s': %w", key, err))
-			continue
-		}
-
-		// Add to pending operations based on return type
-		outputValue := &Value{
-			Name:      key,
-			Value:     secureValue,
-			Source:    "secret",
-			Timestamp: result.Results[key].Metrics.EndTime.Unix(),
-		}
-
-		switch m.config.ReturnType {
-		case config.ReturnTypeOutput, config.ReturnTypeBoth:
-			pendingOutputs = append(pendingOutputs, Operation{
-				Type:  "output",
-				Name:  key,
-				Value: outputValue,
-			})
-
-		case config.ReturnTypeEnv:
-			envVarName := m.generateEnvVarName(key, result.Results[key])
-			pendingEnvVars = append(pendingEnvVars, Operation{
-				Type:  "env",
-				Name:  envVarName,
-				Value: outputValue,
-			})
-		}
-
-		if m.config.ReturnType == config.ReturnTypeBoth {
-			envVarName := m.generateEnvVarName(key, result.Results[key])
-			pendingEnvVars = append(pendingEnvVars, Operation{
-				Type:  "env",
-				Name:  envVarName,
-				Value: outputValue,
-			})
-		}
-	}
-
-	// Add metadata outputs
-	if m.config.ReturnType == config.ReturnTypeOutput ||
-		m.config.ReturnType == config.ReturnTypeBoth {
-
-		secretsCountValue, err := security.NewSecureStringFromString(
-			fmt.Sprintf("%d", result.SuccessCount))
-		if err == nil {
-			pendingOutputs = append(pendingOutputs, Operation{
-				Type: "output",
-				Name: "secrets_count",
-				Value: &Value{
-					Name:      "secrets_count",
-					Value:     secretsCountValue,
-					Source:    "metadata",
-					Timestamp: result.Results[getFirstKey(result.Results)].Metrics.EndTime.Unix(),
-				},
-			})
-		}
-	}
+	pendingOutputs, pendingEnvVars := m.collectPendingOperations(result, outputResult)
+	pendingOutputs = m.appendMetadataOutputs(result, pendingOutputs)
 
 	// Execute operations atomically if configured
 	if m.outputConfig.AtomicOperations {
 		// For atomic operations, execute all or none
 		if len(outputResult.Errors) > 0 {
+			// On this early return the pending operations are never stored
+			// in m.outputs/m.envVars, so nothing else will destroy their
+			// secure values. Release them here to avoid leaking locked-memory
+			// allocations.
+			m.destroyPendingOperations(pendingOutputs, pendingEnvVars)
 			return outputResult, fmt.Errorf("validation errors prevent atomic execution")
 		}
 	}
 
-	// Execute output operations
-	if len(pendingOutputs) > 0 {
-		if err := m.executeOutputOperations(pendingOutputs); err != nil {
-			outputResult.Errors = append(outputResult.Errors, err)
-		} else {
-			outputResult.OutputsSet = len(pendingOutputs)
-		}
-	}
-
-	// Execute environment variable operations
-	if len(pendingEnvVars) > 0 {
-		if err := m.executeEnvOperations(pendingEnvVars); err != nil {
-			outputResult.Errors = append(outputResult.Errors, err)
-		} else {
-			outputResult.EnvVarsSet = len(pendingEnvVars)
-		}
-	}
+	m.executePendingOperations(pendingOutputs, pendingEnvVars, outputResult)
 
 	// Count masked values
 	outputResult.ValuesMasked = len(m.maskedValues)
@@ -303,6 +189,205 @@ type Operation struct {
 	Type  string // "output" or "env"
 	Name  string
 	Value *Value
+}
+
+// collectPendingOperations builds the pending output and env var operations
+// for all successful secrets, recording validation errors on outputResult.
+func (m *Manager) collectPendingOperations(
+	result *secrets.BatchResult, outputResult *Result,
+) ([]Operation, []Operation) {
+	var pendingOutputs []Operation
+	var pendingEnvVars []Operation
+
+	for key, secretResult := range result.Results {
+		if secretResult.Error != nil {
+			m.logger.Debug("Skipping output for failed secret",
+				"key", key, "error", secretResult.Error)
+			outputResult.Errors = append(outputResult.Errors,
+				fmt.Errorf("secret '%s' failed: %w", key, secretResult.Error))
+			continue
+		}
+
+		ops, err := m.buildSecretOperations(key, secretResult, result)
+		if err != nil {
+			outputResult.Errors = append(outputResult.Errors, err)
+			continue
+		}
+
+		for _, op := range ops {
+			switch op.Type {
+			case "output":
+				pendingOutputs = append(pendingOutputs, op)
+			case "env":
+				pendingEnvVars = append(pendingEnvVars, op)
+			}
+		}
+	}
+
+	return pendingOutputs, pendingEnvVars
+}
+
+// buildSecretOperations validates and processes a single secret, returning the
+// pending operations it should produce based on the configured return type.
+func (m *Manager) buildSecretOperations(
+	key string, secretResult *secrets.SecretResult, result *secrets.BatchResult,
+) ([]Operation, error) {
+	if secretResult.Value == nil || secretResult.Value.IsEmpty() {
+		m.logger.Warn("Skipping output for empty secret", "key", key)
+		return nil, nil
+	}
+
+	if err := m.validator.ValidateOutputName(key); err != nil {
+		return nil, fmt.Errorf("invalid output name '%s': %w", key, err)
+	}
+
+	secretValue := secretResult.Value.String()
+	if err := m.validator.ValidateOutputValue(secretValue); err != nil {
+		return nil, fmt.Errorf("invalid output value for '%s': %w", key, err)
+	}
+
+	processedValue, err := m.processOutputValue(secretValue)
+	if err != nil {
+		return nil, fmt.Errorf("failed to process value for '%s': %w", key, err)
+	}
+
+	secureValue, err := security.NewSecureStringFromString(processedValue)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create secure value for '%s': %w", key, err)
+	}
+
+	outputValue := &Value{
+		Name:      key,
+		Value:     secureValue,
+		Source:    "secret",
+		Timestamp: secretTimestamp(secretResult),
+	}
+
+	var ops []Operation
+	switch m.config.ReturnType {
+	case config.ReturnTypeOutput, config.ReturnTypeBoth:
+		ops = append(ops, Operation{
+			Type:  "output",
+			Name:  key,
+			Value: outputValue,
+		})
+
+	case config.ReturnTypeEnv:
+		envVarName := m.generateEnvVarName(key, result.Results[key])
+		ops = append(ops, Operation{
+			Type:  "env",
+			Name:  envVarName,
+			Value: outputValue,
+		})
+	}
+
+	if m.config.ReturnType == config.ReturnTypeBoth {
+		envVarName := m.generateEnvVarName(key, result.Results[key])
+		ops = append(ops, Operation{
+			Type:  "env",
+			Name:  envVarName,
+			Value: outputValue,
+		})
+	}
+
+	return ops, nil
+}
+
+// appendMetadataOutputs appends the secrets_count metadata output when the
+// return type includes GitHub Actions outputs.
+func (m *Manager) appendMetadataOutputs(
+	result *secrets.BatchResult, pendingOutputs []Operation,
+) []Operation {
+	if m.config.ReturnType != config.ReturnTypeOutput &&
+		m.config.ReturnType != config.ReturnTypeBoth {
+		return pendingOutputs
+	}
+
+	secretsCountValue, err := security.NewSecureStringFromString(
+		fmt.Sprintf("%d", result.SuccessCount))
+	if err != nil {
+		return pendingOutputs
+	}
+
+	return append(pendingOutputs, Operation{
+		Type: "output",
+		Name: "secrets_count",
+		Value: &Value{
+			Name:      "secrets_count",
+			Value:     secretsCountValue,
+			Source:    "metadata",
+			Timestamp: metadataTimestamp(result),
+		},
+	})
+}
+
+// metadataTimestamp returns a representative timestamp for metadata outputs.
+// It falls back to the current time when the batch has no entries (getFirstKey
+// yields "" for an empty map) or the first entry carries no metrics, which
+// would otherwise dereference a nil pointer.
+func metadataTimestamp(result *secrets.BatchResult) int64 {
+	return secretTimestamp(result.Results[getFirstKey(result.Results)])
+}
+
+// secretTimestamp returns a secret's retrieval end time, falling back to the
+// current time when the result or its metrics are absent, or when the end time
+// was never recorded (a zero time.Time converts to a large negative Unix
+// value, which would corrupt output/metadata timestamps).
+func secretTimestamp(secretResult *secrets.SecretResult) int64 {
+	if secretResult != nil && secretResult.Metrics != nil &&
+		!secretResult.Metrics.EndTime.IsZero() {
+		return secretResult.Metrics.EndTime.Unix()
+	}
+	return time.Now().Unix()
+}
+
+// destroyPendingOperations releases the secure values held by pending
+// operations that will not be executed, preventing locked-memory leaks on
+// early-return paths (e.g. aborted atomic execution). A value may be shared
+// between an output and an env operation (return type "both"), so each
+// distinct value is destroyed only once; SecureString.Destroy is also
+// idempotent as a safeguard.
+func (m *Manager) destroyPendingOperations(groups ...[]Operation) {
+	seen := make(map[*Value]struct{})
+	for _, group := range groups {
+		for _, op := range group {
+			if op.Value == nil {
+				continue
+			}
+			if _, done := seen[op.Value]; done {
+				continue
+			}
+			seen[op.Value] = struct{}{}
+			if op.Value.Value != nil {
+				if err := op.Value.Value.Destroy(); err != nil {
+					m.logger.Debug("Failed to destroy pending operation value",
+						"name", op.Name, "error", err)
+				}
+			}
+		}
+	}
+}
+
+// executePendingOperations runs the pending output and env var operations,
+// recording per-group results and errors on outputResult.
+func (m *Manager) executePendingOperations(
+	pendingOutputs, pendingEnvVars []Operation, outputResult *Result,
+) {
+	if len(pendingOutputs) > 0 {
+		if err := m.executeOutputOperations(pendingOutputs); err != nil {
+			outputResult.Errors = append(outputResult.Errors, err)
+		} else {
+			outputResult.OutputsSet = len(pendingOutputs)
+		}
+	}
+
+	if len(pendingEnvVars) > 0 {
+		if err := m.executeEnvOperations(pendingEnvVars); err != nil {
+			outputResult.Errors = append(outputResult.Errors, err)
+		} else {
+			outputResult.EnvVarsSet = len(pendingEnvVars)
+		}
+	}
 }
 
 // executeOutputOperations executes GitHub Actions output operations
@@ -480,7 +565,6 @@ func (m *Manager) processOutputValue(value string) (string, error) {
 	if m.validator != nil {
 		// Convert Windows line endings to Unix
 		processed = strings.ReplaceAll(processed, "\r\n", "\n")
-		// Remove any remaining carriage returns
 		processed = strings.ReplaceAll(processed, "\r", "")
 	}
 
@@ -555,14 +639,12 @@ func (m *Manager) Destroy() error {
 
 	var errors []error
 
-	// Clean up outputs
 	for name, output := range m.outputs {
 		if err := output.Value.Destroy(); err != nil {
 			errors = append(errors, fmt.Errorf("failed to destroy output '%s': %w", name, err))
 		}
 	}
 
-	// Clean up environment variables
 	for name, envVar := range m.envVars {
 		if err := envVar.Value.Destroy(); err != nil {
 			errors = append(errors, fmt.Errorf("failed to destroy env var '%s': %w", name, err))
@@ -574,7 +656,6 @@ func (m *Manager) Destroy() error {
 	m.envVars = make(map[string]*Value)
 	m.maskedValues = make([]string, 0)
 
-	// Clean up GitHub Actions integration
 	if m.github != nil {
 		if err := m.github.Destroy(); err != nil {
 			errors = append(errors, fmt.Errorf("failed to destroy GitHub integration: %w", err))
@@ -620,7 +701,6 @@ func ValidateOutputName(name string) error {
 			outputNamePattern.String())
 	}
 
-	// Check for reserved names
 	reservedNames := map[string]bool{
 		"github":    true,
 		"runner":    true,

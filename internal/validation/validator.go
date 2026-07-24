@@ -34,7 +34,6 @@ const (
 
 	// Token validation limits - removed MinTokenLength as we now require exact length
 
-	// Parsing limits
 	MaxJSONDepth        = 10
 	MaxYAMLDepth        = 10
 	MaxSecretsCount     = 100
@@ -46,6 +45,17 @@ const (
 	ValidFieldChars  = `[a-zA-Z0-9\-_ \.]+`
 	ValidOutputChars = `[a-zA-Z0-9_]+`
 )
+
+// Record format detection markers.
+const (
+	jsonObjectPrefix = "{"
+	jsonArrayPrefix  = "["
+	yamlKeyValueSep  = ": "
+)
+
+// cmdInjectionPatterns lists shell metacharacters that indicate a potential
+// command injection attempt.
+var cmdInjectionPatterns = []string{";", "|", "&", "$", "`", "$(", "${", "&&", "||"}
 
 // Validator provides comprehensive input validation and sanitization
 type Validator struct {
@@ -211,7 +221,6 @@ func (v *Validator) ValidateToken(token string) error {
 		}).WithUserMessage("The token contains invalid characters")
 	}
 
-	// Check for security attack patterns
 	if err := v.validateSecurityPatterns("token", token); err != nil {
 		return err
 	}
@@ -274,7 +283,6 @@ func (v *Validator) ValidateTokenWithInfo(token *security.SecureString) (*TokenI
 		return nil, err.(*TokenValidationError)
 	}
 
-	// Create token info
 	info := &TokenInfo{
 		Type:        v.determineTokenType(tokenStr),
 		IsValid:     true,
@@ -290,7 +298,6 @@ func (v *Validator) ValidateTokenWithInfo(token *security.SecureString) (*TokenI
 
 // ValidateTokenString validates a token provided as a string (less secure).
 func (v *Validator) ValidateTokenString(tokenStr string) (*TokenInfo, error) {
-	// Create a temporary secure string for validation
 	secureToken, err := security.NewSecureStringFromString(tokenStr)
 	if err != nil {
 		return nil, &TokenValidationError{
@@ -361,13 +368,11 @@ func (v *Validator) performSecurityChecks(token string, info *TokenInfo) {
 			"Token contains excessive repeated characters - ensure this is not a test token")
 	}
 
-	// Check for sequential patterns
 	if v.hasSequentialPattern(token) {
 		info.Warnings = append(info.Warnings,
 			"Token contains sequential character patterns - ensure this is a genuine token")
 	}
 
-	// Check for common test values
 	if v.isLikelyTestToken(token) {
 		info.Warnings = append(info.Warnings,
 			"Token appears to be a test or example value - ensure this is a real token")
@@ -511,7 +516,6 @@ func (v *Validator) ValidateVault(vault string) error {
 		}
 	}
 
-	// Check for security attack patterns
 	if err := v.validateSecurityPatterns("vault", vault); err != nil {
 		return err
 	}
@@ -570,8 +574,18 @@ func (v *Validator) ValidateReturnType(returnType string) error {
 
 // ParseRecord parses and validates the record specification
 func (v *Validator) ParseRecord(record string) (*RecordSpec, error) {
+	if err := v.validateRecordInput(record); err != nil {
+		return nil, err
+	}
+
+	return v.parseRecordFormat(record)
+}
+
+// validateRecordInput enforces the size, encoding, and security constraints on
+// a raw record specification before parsing.
+func (v *Validator) validateRecordInput(record string) error {
 	if record == "" {
-		return nil, errors.NewConfigurationError(
+		return errors.NewConfigurationError(
 			errors.ErrCodeMissingInput,
 			"Record specification is required",
 			nil,
@@ -581,7 +595,7 @@ func (v *Validator) ParseRecord(record string) (*RecordSpec, error) {
 	}
 
 	if len(record) > MaxRecordLength {
-		return nil, errors.NewConfigurationError(
+		return errors.NewConfigurationError(
 			errors.ErrCodeInvalidRecord,
 			fmt.Sprintf("Record specification exceeds maximum allowed length of %d characters", MaxRecordLength),
 			nil,
@@ -593,7 +607,7 @@ func (v *Validator) ParseRecord(record string) (*RecordSpec, error) {
 	}
 
 	if !utf8.ValidString(record) {
-		return nil, errors.NewConfigurationError(
+		return errors.NewConfigurationError(
 			errors.ErrCodeInvalidRecord,
 			"Record specification contains invalid UTF-8 characters",
 			nil,
@@ -602,14 +616,15 @@ func (v *Validator) ParseRecord(record string) (*RecordSpec, error) {
 		}).WithUserMessage("The record specification contains invalid characters")
 	}
 
-	// Check for security attack patterns
-	if err := v.validateSecurityPatterns("record", record); err != nil {
-		return nil, err
-	}
+	return v.validateSecurityPatterns("record", record)
+}
 
+// parseRecordFormat parses a validated record as JSON, YAML, or a single-record
+// specification, in that order of preference.
+func (v *Validator) parseRecordFormat(record string) (*RecordSpec, error) {
 	// Try to parse as JSON first (starts with { or [)
 	trimmed := strings.TrimSpace(record)
-	if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
+	if strings.HasPrefix(trimmed, jsonObjectPrefix) || strings.HasPrefix(trimmed, jsonArrayPrefix) {
 		if multiRecord, err := v.parseJSONRecord(record); err == nil {
 			return &RecordSpec{
 				Type:  RecordTypeMultiple,
@@ -620,7 +635,7 @@ func (v *Validator) ParseRecord(record string) (*RecordSpec, error) {
 
 	// Try to parse as YAML if it looks like YAML format
 	// YAML format: key: value (must have space after colon and no slash for secret/field)
-	if strings.Contains(record, ": ") {
+	if strings.Contains(record, yamlKeyValueSep) {
 		if multiRecord, err := v.parseYAMLRecord(record); err == nil {
 			return &RecordSpec{
 				Type:  RecordTypeMultiple,
@@ -668,7 +683,6 @@ func (v *Validator) parseSingleRecord(record string) (*SingleRecord, error) {
 		secretPart = trimmed
 	}
 
-	// Parse secret/field format
 	parts := strings.Split(secretPart, "/")
 	if len(parts) != 2 {
 		return nil, fmt.Errorf("invalid format, expected 'secret-name/field-name' or 'vault:secret-name/field-name'")
@@ -732,7 +746,6 @@ func (v *Validator) parseMultiRecord(data map[string]interface{}) (map[string]*S
 	result := make(map[string]*SingleRecord)
 
 	for outputName, secretSpecRaw := range data {
-		// Validate output name
 		if err := v.validateOutputName(outputName); err != nil {
 			return nil, fmt.Errorf("invalid output name %q: %w", outputName, err)
 		}
@@ -743,7 +756,6 @@ func (v *Validator) parseMultiRecord(data map[string]interface{}) (map[string]*S
 			return nil, fmt.Errorf("secret specification for %q must be a string", outputName)
 		}
 
-		// Parse the secret specification
 		singleRecord, err := v.parseSingleRecord(secretSpec)
 		if err != nil {
 			return nil, fmt.Errorf("invalid secret specification for %q: %w", outputName, err)
@@ -846,22 +858,18 @@ func (v *Validator) SanitizeInput(input string) string {
 
 // ValidateInputs validates all action inputs together
 func (v *Validator) ValidateInputs(token, vault, returnType, record string) (*RecordSpec, error) {
-	// Validate token
 	if err := v.ValidateToken(token); err != nil {
 		return nil, err
 	}
 
-	// Validate vault
 	if err := v.ValidateVault(vault); err != nil {
 		return nil, err
 	}
 
-	// Validate return type
 	if err := v.ValidateReturnType(returnType); err != nil {
 		return nil, err
 	}
 
-	// Parse and validate record
 	recordSpec, err := v.ParseRecord(record)
 	if err != nil {
 		return nil, err
@@ -901,7 +909,25 @@ func ValidateRecordFormat(record string) error {
 
 // validateSecurityPatterns checks for common security attack patterns
 func (v *Validator) validateSecurityPatterns(field, value string) error {
-	// Check for SQL injection patterns
+	checks := []func(string, string) error{
+		v.checkSQLInjection,
+		v.checkCommandInjection,
+		v.checkPathTraversal,
+		v.checkScriptInjection,
+		v.checkDangerousContent,
+	}
+
+	for _, check := range checks {
+		if err := check(field, value); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// checkSQLInjection rejects values containing common SQL injection patterns.
+func (v *Validator) checkSQLInjection(field, value string) error {
 	sqlPatterns := []string{"'", ";", "--", "/*", "*/", "DROP", "DELETE", "INSERT", "UPDATE", "SELECT"}
 	valueUpper := strings.ToUpper(value)
 	for _, pattern := range sqlPatterns {
@@ -917,10 +943,12 @@ func (v *Validator) validateSecurityPatterns(field, value string) error {
 			}).WithUserMessage(fmt.Sprintf("The %s contains characters that could be used for SQL injection attacks", field))
 		}
 	}
+	return nil
+}
 
-	// Check for command injection patterns
-	cmdPatterns := []string{";", "|", "&", "$", "`", "$(", "${", "&&", "||"}
-	for _, pattern := range cmdPatterns {
+// checkCommandInjection rejects values containing shell command injection patterns.
+func (v *Validator) checkCommandInjection(field, value string) error {
+	for _, pattern := range cmdInjectionPatterns {
 		if strings.Contains(value, pattern) {
 			return errors.NewConfigurationError(
 				errors.ErrCodeInvalidInput,
@@ -933,8 +961,11 @@ func (v *Validator) validateSecurityPatterns(field, value string) error {
 			}).WithUserMessage(fmt.Sprintf("The %s contains characters that could be used for command injection attacks", field))
 		}
 	}
+	return nil
+}
 
-	// Check for path traversal patterns
+// checkPathTraversal rejects vault values containing path traversal patterns.
+func (v *Validator) checkPathTraversal(field, value string) error {
 	pathTraversalPatterns := []string{"..", "/", "\\"}
 	for _, pattern := range pathTraversalPatterns {
 		if strings.Contains(value, pattern) && field == "vault" {
@@ -949,8 +980,11 @@ func (v *Validator) validateSecurityPatterns(field, value string) error {
 			}).WithUserMessage(fmt.Sprintf("The %s contains characters that could be used for path traversal attacks", field))
 		}
 	}
+	return nil
+}
 
-	// Check for script injection patterns
+// checkScriptInjection rejects values containing script injection patterns.
+func (v *Validator) checkScriptInjection(field, value string) error {
 	scriptPatterns := []string{"<script", "</script", "javascript:", "data:", "vbscript:"}
 	valueLower := strings.ToLower(value)
 	for _, pattern := range scriptPatterns {
@@ -966,8 +1000,12 @@ func (v *Validator) validateSecurityPatterns(field, value string) error {
 			}).WithUserMessage(fmt.Sprintf("The %s contains patterns that could be used for script injection attacks", field))
 		}
 	}
+	return nil
+}
 
-	// Check for null bytes
+// checkDangerousContent rejects null bytes, Unicode confusion characters, format
+// string patterns, YAML bombs, and JSON injection in record values.
+func (v *Validator) checkDangerousContent(field, value string) error {
 	if strings.Contains(value, "\x00") {
 		return errors.NewConfigurationError(
 			errors.ErrCodeInvalidInput,
@@ -991,7 +1029,6 @@ func (v *Validator) validateSecurityPatterns(field, value string) error {
 		}).WithUserMessage(fmt.Sprintf("The %s contains Unicode characters that could be used for confusion attacks", field))
 	}
 
-	// Check for format string attacks
 	if strings.Contains(value, "%s") || strings.Contains(value, "%d") || strings.Contains(value, "%x") {
 		return errors.NewConfigurationError(
 			errors.ErrCodeInvalidInput,
@@ -1003,7 +1040,6 @@ func (v *Validator) validateSecurityPatterns(field, value string) error {
 		}).WithUserMessage(fmt.Sprintf("The %s contains format string patterns that are not allowed", field))
 	}
 
-	// Check for YAML bomb patterns
 	if strings.Contains(value, "&a") && strings.Contains(value, "*a") {
 		return errors.NewConfigurationError(
 			errors.ErrCodeInvalidInput,
@@ -1015,7 +1051,6 @@ func (v *Validator) validateSecurityPatterns(field, value string) error {
 		}).WithUserMessage(fmt.Sprintf("The %s contains YAML patterns that could cause resource exhaustion", field))
 	}
 
-	// Check for JSON injection patterns in record fields
 	if field == "record" && strings.Contains(value, `"malicious"`) {
 		return errors.NewConfigurationError(
 			errors.ErrCodeInvalidInput,

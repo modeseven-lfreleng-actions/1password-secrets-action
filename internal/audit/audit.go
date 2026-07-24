@@ -221,7 +221,6 @@ func New(config *Config, log *logger.Logger) (*Trail, error) {
 		}
 	}
 
-	// Start background flusher
 	if config.Enabled {
 		at.ctx, at.cancel = context.WithCancel(context.Background())
 		at.wg.Add(1)
@@ -428,7 +427,6 @@ func (at *Trail) addEvent(event *Event) {
 	at.buffer = append(at.buffer, event)
 	at.eventCount++
 
-	// Log to structured logger
 	at.logEventToLogger(event)
 
 	// Check if buffer is full

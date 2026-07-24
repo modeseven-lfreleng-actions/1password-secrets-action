@@ -11,7 +11,10 @@ ci:
     Chore: pre-commit autoupdate
 
     Signed-off-by: pre-commit-ci[bot] <pre-commit-ci@users.noreply.github.com>
-  skip: [go-fmt, go-vet, go-mod-tidy, go-test, golangci-lint]
+  # pre-commit.ci sandbox prevents network calls; aislop runs engines
+  # that can call the network at scan time, so it cannot run there
+  # either. The Go hooks need the toolchain and module cache.
+  skip: [go-fmt, go-vet, go-mod-tidy, go-test, golangci-lint, aislop]
 
 exclude: "^docs/conf.py"
 
@@ -114,6 +117,22 @@ repos:
         types:
           - yaml
       - id: check-readthedocs
+
+  # Catch AI slop developer-side before it reaches a pull request.
+  # Runs the full-repository quality gate, scored against
+  # .aislop/config.yml. A local hook installing the published npm
+  # package: the scanaislop/aislop git repository does not ship the
+  # built dist/, so its bundled pre-commit hook cannot install. Bump
+  # the pinned version here manually when new aislop releases ship.
+  - repo: local
+    hooks:
+      - id: aislop
+        name: aislop
+        entry: aislop ci --human
+        language: node
+        additional_dependencies: ["aislop@0.13.1"]
+        pass_filenames: false
+        always_run: true
 
   # Go-specific linting and formatting
   - repo: local

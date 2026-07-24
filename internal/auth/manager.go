@@ -140,7 +140,6 @@ func NewManager(client CLIClient, log *logger.Logger, config *Config) (*Manager,
 		return nil, fmt.Errorf("configuration is required")
 	}
 
-	// Validate configuration
 	if err := validateConfig(config); err != nil {
 		return nil, fmt.Errorf("invalid configuration: %w", err)
 	}
@@ -320,7 +319,6 @@ func (m *Manager) ResolveVault(ctx context.Context, vaultIdentifier string) (*Va
 		return nil, fmt.Errorf("failed to resolve vault '%s': %w", vaultIdentifier, err)
 	}
 
-	// Create metadata
 	metadata := &VaultMetadata{
 		ID:          vaultInfo.ID,
 		Name:        vaultInfo.Name,
@@ -373,7 +371,6 @@ func (m *Manager) ValidateAccess(ctx context.Context, vaultIdentifier, itemRefer
 		return fmt.Errorf("vault access validation failed: %w", err)
 	}
 
-	// Validate item access using CLI client
 	if err := m.client.ValidateAccess(ctx, vaultIdentifier, itemReference); err != nil {
 		return fmt.Errorf("item access validation failed: %w", err)
 	}
@@ -416,7 +413,6 @@ func (m *Manager) Destroy() error {
 	// Clear sensitive cache data
 	m.cache.clear()
 
-	// Log final metrics
 	m.logger.Info("Authentication manager metrics", m.GetMetrics())
 
 	return nil

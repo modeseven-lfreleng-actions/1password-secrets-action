@@ -161,7 +161,6 @@ var configExportCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		format, _ := cmd.Flags().GetString("format")
 
-		// Load current configuration
 		cfg, err := config.Load()
 		if err != nil {
 			return fmt.Errorf(ErrFailedToLoadConfiguration, err)
@@ -348,7 +347,6 @@ func init() {
 }
 
 func runAction(_ *cobra.Command, _ []string) error {
-	// Set up signal handling for graceful shutdown
 	ctx, cancel := signal.NotifyContext(context.Background(),
 		os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -356,19 +354,16 @@ func runAction(_ *cobra.Command, _ []string) error {
 	// Prevent unused global variable error after removing CLI token flag support
 	_ = flagToken
 
-	// Validate inputs and set up environment variables
 	if err := validateAndSetupEnvironment(); err != nil {
 		return err
 	}
 
-	// Initialize logger with custom config based on flags
 	log, err := setupLogger()
 	if err != nil {
 		return fmt.Errorf(ErrFailedToInitializeLogger, err)
 	}
 	defer func() { _ = log.Cleanup() }()
 
-	// Load configuration from environment and flags
 	cfg, err := config.Load()
 	if err != nil {
 		log.ErrorSensitive("Failed to load configuration", "error", err)
@@ -381,7 +376,6 @@ func runAction(_ *cobra.Command, _ []string) error {
 		log.SetLevel(logLevel)
 	}
 
-	// Initialize the application
 	application, err := app.New(cfg, log)
 	if err != nil {
 		log.ErrorSensitive("Failed to initialize application", "error", err)
@@ -390,7 +384,6 @@ func runAction(_ *cobra.Command, _ []string) error {
 	// Ensure resources are cleaned up even on early return
 	defer func() { _ = application.Destroy() }()
 
-	// Run the application
 	if err := application.Run(ctx); err != nil {
 		log.ErrorSensitive("Application failed", "error", err)
 		return fmt.Errorf(ErrApplicationExecutionFailed, err)
@@ -424,7 +417,6 @@ func validateAndSetupEnvironment() error {
 		return fmt.Errorf("missing record parameter: provide --record flag or set INPUT_RECORD/OP_RECORD environment variable")
 	}
 
-	// Set up other environment variables from flags
 	if flagReturnType != "" {
 		_ = os.Setenv(EnvInputReturnType, flagReturnType)
 	}

@@ -68,7 +68,6 @@ func NewGitHubActions(log *logger.Logger, config *GitHubConfig) (*GitHubActions,
 		masks:   make([]string, 0),
 	}
 
-	// Validate GitHub Actions environment
 	if err := gh.validateEnvironment(); err != nil {
 		return nil, fmt.Errorf("GitHub Actions environment validation failed: %w", err)
 	}
@@ -82,7 +81,6 @@ func (gh *GitHubActions) validateEnvironment() error {
 		return fmt.Errorf("not running in GitHub Actions environment (GITHUB_WORKSPACE not set)")
 	}
 
-	// Validate file permissions and accessibility
 	if gh.config.ValidateFiles {
 		if gh.config.OutputFile != "" {
 			if err := gh.validateFile(gh.config.OutputFile, "GITHUB_OUTPUT"); err != nil {
@@ -165,7 +163,6 @@ func (gh *GitHubActions) SetOutput(name, value string) error {
 		return fmt.Errorf("invalid output value: %w", err)
 	}
 
-	// Handle dry run mode
 	if gh.config.DryRun {
 		gh.logger.Info("DRY RUN: Would set output", "name", name, "value_length", len(value))
 		gh.outputs[name] = value
@@ -201,7 +198,6 @@ func (gh *GitHubActions) SetEnv(name, value string) error {
 		return fmt.Errorf("invalid environment variable value: %w", err)
 	}
 
-	// Handle dry run mode
 	if gh.config.DryRun {
 		gh.logger.Info("DRY RUN: Would set environment variable", "name", name, "value_length", len(value))
 		gh.envVars[name] = value
@@ -240,7 +236,6 @@ func (gh *GitHubActions) MaskValue(value string) error {
 		}
 	}
 
-	// Handle dry run mode
 	if gh.config.DryRun {
 		gh.logger.Info("DRY RUN: Would mask value", "value_length", len(value))
 		gh.masks = append(gh.masks, value)
@@ -259,7 +254,6 @@ func (gh *GitHubActions) MaskValue(value string) error {
 
 // writeToFile writes a name=value pair to a GitHub Actions file
 func (gh *GitHubActions) writeToFile(filePath, name, value string) error {
-	// Handle multiline values using GitHub Actions format
 	if strings.Contains(value, "\n") {
 		return gh.writeMultilineToFile(filePath, name, value)
 	}
@@ -301,17 +295,14 @@ func (gh *GitHubActions) writeMultilineToFile(filePath, name, value string) erro
 		}
 	}()
 
-	// Write heredoc format: name<<delimiter
 	if _, err := fmt.Fprintf(file, "%s<<%s\n", name, delimiter); err != nil {
 		return fmt.Errorf("failed to write heredoc start: %w", err)
 	}
 
-	// Write the value
 	if _, err := fmt.Fprintf(file, "%s\n", value); err != nil {
 		return fmt.Errorf("failed to write value: %w", err)
 	}
 
-	// Write the ending delimiter
 	if _, err := fmt.Fprintf(file, "%s\n", delimiter); err != nil {
 		return fmt.Errorf("failed to write heredoc end: %w", err)
 	}
@@ -382,7 +373,6 @@ func (gh *GitHubActions) validateOutputName(name string) error {
 			githubOutputPattern.String())
 	}
 
-	// Check for reserved names
 	reservedNames := map[string]bool{
 		"github":    true,
 		"runner":    true,
@@ -420,7 +410,6 @@ func (gh *GitHubActions) validateEnvName(name string) error {
 			envVarPattern.String())
 	}
 
-	// Check for reserved prefixes
 	upperName := strings.ToUpper(name)
 	for _, prefix := range reservedEnvPrefixes {
 		if strings.HasPrefix(upperName, prefix) {
@@ -455,17 +444,14 @@ func (gh *GitHubActions) validateEnvName(name string) error {
 
 // validateOutputValue validates an output or environment variable value
 func (gh *GitHubActions) validateOutputValue(value string) error {
-	// Check length limits
 	if len(value) > 32768 { // 32KB limit
 		return fmt.Errorf("value too long (maximum 32KB)")
 	}
 
-	// Check for invalid characters or patterns
 	if strings.Contains(value, "\x00") {
 		return fmt.Errorf("value contains null bytes")
 	}
 
-	// Validate UTF-8
 	if strings.ToValidUTF8(value, "") != value {
 		return fmt.Errorf("value contains invalid UTF-8 sequences")
 	}

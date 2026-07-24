@@ -140,6 +140,58 @@ func TestProcessSecrets_SingleSecret(t *testing.T) {
 	assert.Contains(t, masked, "test-secret-value")
 }
 
+func TestProcessSecrets_AtomicErrorDestroysPendingSecureValues(t *testing.T) {
+	manager := createTestManager(t, config.ReturnTypeOutput)
+	manager.outputConfig.AtomicOperations = true
+	defer func() { _ = manager.Destroy() }()
+
+	// One successful secret (allocates a pending SecureString internally, plus
+	// the secrets_count metadata value) and one failed secret, which forces the
+	// atomic path to abort before the pending operations are executed.
+	goodValue := createTestSecureString(t, "good-secret-value")
+	defer func() { _ = goodValue.Destroy() }()
+
+	result := &secrets.BatchResult{
+		Results: map[string]*secrets.SecretResult{
+			"good": {
+				Request: &secrets.SecretRequest{
+					Key: "good", Vault: "v", ItemName: "i", FieldName: "f",
+				},
+				Value: goodValue,
+				Error: nil,
+				Metrics: &secrets.RetrievalMetrics{
+					StartTime: time.Now(), EndTime: time.Now(),
+				},
+			},
+			"bad": {
+				Request: &secrets.SecretRequest{
+					Key: "bad", Vault: "v", ItemName: "i", FieldName: "f",
+				},
+				Value: nil,
+				Error: fmt.Errorf("retrieval failed"),
+				Metrics: &secrets.RetrievalMetrics{
+					StartTime: time.Now(), EndTime: time.Now(),
+				},
+			},
+		},
+		SuccessCount: 1,
+		ErrorCount:   1,
+	}
+
+	before := security.GetPoolStats().ActiveSecrets
+	outputResult, err := manager.ProcessSecrets(result)
+	after := security.GetPoolStats().ActiveSecrets
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "atomic execution")
+	assert.NotEmpty(t, outputResult.Errors)
+	// The pending secure values allocated for the successful secret and the
+	// secrets_count metadata output must be destroyed on the atomic error
+	// path, leaving no net secure-memory allocations.
+	assert.Equal(t, before, after,
+		"pending SecureString values leaked on atomic error path")
+}
+
 func TestProcessSecrets_MultipleSecrets(t *testing.T) {
 	manager := createTestManager(t, config.ReturnTypeOutput)
 	defer func() { _ = manager.Destroy() }()
@@ -736,4 +788,81 @@ func BenchmarkProcessSecrets_Multiple(b *testing.B) {
 			b.Fatal(err)
 		}
 	}
+}
+
+func TestProcessSecrets_EmptyBatchDoesNotPanic(t *testing.T) {
+	manager := createTestManager(t, config.ReturnTypeOutput)
+	defer func() { _ = manager.Destroy() }()
+
+	// An empty Results map makes getFirstKey return "", so the metadata
+	// timestamp lookup must not dereference a nil *SecretResult.
+	result := &secrets.BatchResult{
+		Results:      map[string]*secrets.SecretResult{},
+		SuccessCount: 0,
+		ErrorCount:   0,
+	}
+
+	require.NotPanics(t, func() {
+		outputResult, err := manager.ProcessSecrets(result)
+		assert.NoError(t, err)
+		assert.NotNil(t, outputResult)
+	})
+}
+
+func TestProcessSecrets_NilMetricsDoesNotPanic(t *testing.T) {
+	manager := createTestManager(t, config.ReturnTypeOutput)
+	defer func() { _ = manager.Destroy() }()
+
+	value := createTestSecureString(t, "v")
+	defer func() { _ = value.Destroy() }()
+
+	// A result whose Metrics is nil must not panic when the metadata
+	// timestamp is computed.
+	result := &secrets.BatchResult{
+		Results: map[string]*secrets.SecretResult{
+			"only": {
+				Request: &secrets.SecretRequest{
+					Key: "only", Vault: "v", ItemName: "i", FieldName: "f",
+				},
+				Value:   value,
+				Error:   nil,
+				Metrics: nil,
+			},
+		},
+		SuccessCount: 1,
+	}
+
+	require.NotPanics(t, func() {
+		_, _ = manager.ProcessSecrets(result)
+	})
+}
+
+func TestSecretTimestamp_FallsBackForMissingOrZeroEndTime(t *testing.T) {
+	before := time.Now().Unix()
+
+	// Nil result, nil metrics, and a zero EndTime must all fall back to the
+	// current time; time.Time{}.Unix() is a large negative value that would
+	// otherwise corrupt output/metadata timestamps.
+	cases := map[string]*secrets.SecretResult{
+		"nil result":  nil,
+		"nil metrics": {Metrics: nil},
+		"zero endtime": {
+			Metrics: &secrets.RetrievalMetrics{StartTime: time.Now()},
+		},
+	}
+
+	for name, sr := range cases {
+		t.Run(name, func(t *testing.T) {
+			got := secretTimestamp(sr)
+			assert.GreaterOrEqual(t, got, before)
+			assert.Positive(t, got)
+		})
+	}
+
+	// A recorded end time is used verbatim.
+	end := time.Now().Add(-time.Hour)
+	got := secretTimestamp(&secrets.SecretResult{
+		Metrics: &secrets.RetrievalMetrics{EndTime: end},
+	})
+	assert.Equal(t, end.Unix(), got)
 }

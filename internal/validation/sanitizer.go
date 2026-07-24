@@ -65,7 +65,6 @@ func (s *Sanitizer) SanitizeGeneral(input string) string {
 		return input
 	}
 
-	// Remove invalid UTF-8 sequences
 	if !utf8.ValidString(input) {
 		input = strings.ToValidUTF8(input, "")
 	}
@@ -103,7 +102,6 @@ func (s *Sanitizer) SanitizeVaultName(vault string) string {
 		return vault
 	}
 
-	// Remove control characters and trim
 	vault = s.SanitizeGeneral(vault)
 
 	// Remove potentially dangerous characters but allow spaces, hyphens, dots
@@ -124,7 +122,6 @@ func (s *Sanitizer) SanitizeSecretName(secretName string) string {
 		return secretName
 	}
 
-	// Remove control characters
 	secretName = s.SanitizeGeneral(secretName)
 
 	// Allow only alphanumeric, hyphens, underscores, and dots
@@ -145,7 +142,6 @@ func (s *Sanitizer) SanitizeFieldName(fieldName string) string {
 		return fieldName
 	}
 
-	// Remove control characters
 	fieldName = s.SanitizeGeneral(fieldName)
 
 	// Allow only alphanumeric, hyphens, underscores, and dots
@@ -166,7 +162,6 @@ func (s *Sanitizer) SanitizeOutputName(outputName string) string {
 		return outputName
 	}
 
-	// Remove control characters
 	outputName = s.SanitizeGeneral(outputName)
 
 	// Allow only alphanumeric and underscores for GitHub Actions compatibility
@@ -186,12 +181,10 @@ func (s *Sanitizer) DetectShellInjection(input string) bool {
 		return false
 	}
 
-	// Check for shell metacharacters
 	if s.shellMetaRegex.MatchString(input) {
 		return true
 	}
 
-	// Check for common shell injection patterns
 	dangerous := []string{
 		"$(", "${", "`", "||", "&&", ";", "|",
 		">/", "</", ">>", "<<", "&>", "2>",
@@ -309,7 +302,6 @@ func (s *Sanitizer) RemoveNullBytes(input string) string {
 		return input
 	}
 
-	// Remove null bytes and other control characters
 	cleaned := strings.Map(func(r rune) rune {
 		if r == 0 || r == '\ufffd' { // null byte or replacement character
 			return -1
@@ -347,7 +339,6 @@ func (s *Sanitizer) SanitizeJSONInput(input string) string {
 		return input
 	}
 
-	// Remove null bytes and control characters
 	input = s.RemoveNullBytes(input)
 	input = s.controlCharsRegex.ReplaceAllString(input, "")
 
@@ -363,7 +354,6 @@ func (s *Sanitizer) SanitizeYAMLInput(input string) string {
 		return input
 	}
 
-	// Remove null bytes but preserve newlines for YAML
 	input = strings.ReplaceAll(input, "\x00", "")
 
 	// Remove other dangerous control characters but keep \n, \t, \r

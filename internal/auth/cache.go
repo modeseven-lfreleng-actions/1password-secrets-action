@@ -112,14 +112,12 @@ func (c *cache) cleanExpired() {
 
 	now := time.Now()
 
-	// Clean expired vault metadata
 	for identifier, metadata := range c.vaults {
 		if now.Sub(metadata.CachedAt) > metadata.TTL {
 			delete(c.vaults, identifier)
 		}
 	}
 
-	// Clean expired auth state
 	if c.authState != nil && now.Sub(c.authState.ValidatedAt) > c.authState.TTL {
 		c.authState = nil
 	}

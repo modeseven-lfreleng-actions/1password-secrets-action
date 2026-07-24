@@ -236,7 +236,6 @@ func ParseRecordsToRequests(cfg *config.Config) ([]*SecretRequest, error) {
 
 	// If Records is empty but Record is not, try to parse Record into Records
 	if len(cfg.Records) == 0 && cfg.Record != "" {
-		// Create a temporary config copy to parse records
 		tempCfg := *cfg
 		tempCfg.Records = make(map[string]string)
 
@@ -278,7 +277,6 @@ func ParseRecordsToRequests(cfg *config.Config) ([]*SecretRequest, error) {
 		)
 	}
 
-	// Validate that vault is provided
 	if cfg.Vault == "" {
 		return nil, errors.NewConfigurationError(
 			errors.ErrCodeSecretParsingFailed,
@@ -323,22 +321,44 @@ func (e *Engine) RetrieveSecrets(ctx context.Context, requests []*SecretRequest)
 	startTime := time.Now()
 	e.metrics.incrementTotalBatches()
 
-	// Create batch context with timeout
 	batchCtx, cancel := context.WithTimeout(ctx, e.config.BatchTimeout)
 	defer cancel()
 
-	// Initialize result structure
 	result := &BatchResult{
 		Results: make(map[string]*SecretResult),
 		Errors:  make([]error, 0),
 	}
 
-	// Create semaphore for concurrency control
+	e.dispatchRetrievals(batchCtx, requests, result)
+
+	// Calculate total duration
+	result.TotalDuration = time.Since(startTime)
+
+	// Determine atomic success
+	result.AtomicSuccess = result.ErrorCount == 0 && len(result.Errors) == 0
+
+	if e.config.AtomicOperations && !result.AtomicSuccess {
+		return e.handleAtomicFailure(result)
+	}
+
+	e.logger.Info("Batch secret retrieval completed",
+		"success_count", result.SuccessCount,
+		"error_count", result.ErrorCount,
+		"duration", result.TotalDuration,
+		"atomic_success", result.AtomicSuccess)
+
+	return result, nil
+}
+
+// dispatchRetrievals runs all secret requests concurrently, bounded by the
+// configured concurrency limit, and records each outcome on result.
+func (e *Engine) dispatchRetrievals(
+	batchCtx context.Context, requests []*SecretRequest, result *BatchResult,
+) {
 	semaphore := make(chan struct{}, e.config.MaxConcurrentRequests)
 	var wg sync.WaitGroup
 	var resultMutex sync.Mutex
 
-	// Process requests in parallel
 	for _, request := range requests {
 		wg.Add(1)
 
@@ -348,7 +368,6 @@ func (e *Engine) RetrieveSecrets(ctx context.Context, requests []*SecretRequest)
 			// Acquire semaphore
 			select {
 			case semaphore <- struct{}{}:
-				// Update concurrent tracking
 				concurrent := e.metrics.incrementConcurrentRequests()
 				if concurrent > e.metrics.getMaxConcurrentReached() {
 					e.metrics.setMaxConcurrentReached(concurrent)
@@ -358,9 +377,23 @@ func (e *Engine) RetrieveSecrets(ctx context.Context, requests []*SecretRequest)
 					<-semaphore
 				}()
 			case <-batchCtx.Done():
+				// batchCtx completes on either the batch timeout or parent
+				// cancellation, so keep the wording generic and wrap the
+				// cause (DeadlineExceeded vs Canceled) for reporting.
+				cancelErr := fmt.Errorf(
+					"request for key '%s' canceled before execution: %w",
+					req.Key, batchCtx.Err())
 				resultMutex.Lock()
-				result.Errors = append(result.Errors,
-					fmt.Errorf("request for key '%s' canceled due to timeout", req.Key))
+				// Record a result and count the failure so batch accounting
+				// stays consistent; otherwise ErrorCount (and therefore
+				// AtomicSuccess) ignores this error and the key is missing
+				// from Results entirely.
+				result.Results[req.Key] = &SecretResult{
+					Request: req,
+					Error:   cancelErr,
+				}
+				result.ErrorCount++
+				result.Errors = append(result.Errors, cancelErr)
 				resultMutex.Unlock()
 				return
 			}
@@ -383,47 +416,47 @@ func (e *Engine) RetrieveSecrets(ctx context.Context, requests []*SecretRequest)
 
 	// Wait for all requests to complete
 	wg.Wait()
+}
 
-	// Calculate total duration
-	result.TotalDuration = time.Since(startTime)
+// handleAtomicFailure reports a failed atomic batch, optionally zeroing any
+// successful secrets, and returns the most actionable error available.
+func (e *Engine) handleAtomicFailure(result *BatchResult) (*BatchResult, error) {
+	e.logger.Error("Batch operation failed atomically",
+		"success_count", result.SuccessCount,
+		"error_count", result.ErrorCount)
 
-	// Determine atomic success
-	result.AtomicSuccess = result.ErrorCount == 0
+	e.metrics.incrementAtomicFailures()
 
-	// Handle atomic operations mode
-	if e.config.AtomicOperations && !result.AtomicSuccess {
-		e.logger.Error("Batch operation failed atomically",
-			"success_count", result.SuccessCount,
-			"error_count", result.ErrorCount)
-
-		e.metrics.incrementAtomicFailures()
-
-		// Zero successful secrets if configured
-		if e.config.ZeroSecretsOnError {
-			e.zeroSuccessfulSecrets(result.Results)
-		}
-
-		// If there's only one error, preserve the original ActionableError
-		if result.ErrorCount == 1 {
-			for _, secretResult := range result.Results {
-				if secretResult.Error != nil {
-					return result, secretResult.Error
-				}
-			}
-		}
-
-		return result, fmt.Errorf("atomic batch operation failed: %d errors occurred",
-			result.ErrorCount)
+	// Zero successful secrets if configured
+	if e.config.ZeroSecretsOnError {
+		e.zeroSuccessfulSecrets(result.Results)
 	}
 
-	e.logger.Info("Batch secret retrieval completed",
-		"success_count", result.SuccessCount,
-		"error_count", result.ErrorCount,
-		"duration", result.TotalDuration,
-		"atomic_success", result.AtomicSuccess)
+	// If there's only one error, preserve the original ActionableError
+	if result.ErrorCount == 1 {
+		for _, secretResult := range result.Results {
+			if secretResult.Error != nil {
+				return result, secretResult.Error
+			}
+		}
+	}
 
-	return result, nil
+	return result, fmt.Errorf("atomic batch operation failed: %d errors occurred",
+		result.ErrorCount)
 }
+
+// attemptOutcome describes how a single secret retrieval attempt concluded.
+type attemptOutcome int
+
+const (
+	// attemptCanceled indicates the context was canceled; the caller must
+	// return immediately without finalizing retrieval metrics.
+	attemptCanceled attemptOutcome = iota
+	// attemptRetry indicates a retryable failure; the caller should retry.
+	attemptRetry
+	// attemptDone indicates success or a terminal error; stop retrying.
+	attemptDone
+)
 
 // retrieveSingleSecret retrieves a single secret with retry logic.
 func (e *Engine) retrieveSingleSecret(ctx context.Context, request *SecretRequest) *SecretResult {
@@ -442,77 +475,103 @@ func (e *Engine) retrieveSingleSecret(ctx context.Context, request *SecretReques
 
 	// Retry loop
 	for attempt := 0; attempt <= e.config.MaxRetries; attempt++ {
-		metrics.Attempts++
-
-		// Check context cancellation
-		select {
-		case <-ctx.Done():
-			result.Error = fmt.Errorf("secret retrieval canceled for key '%s': %w",
-				request.Key, ctx.Err())
-			e.metrics.incrementFailedRequests()
+		outcome := e.attemptSecretRetrieval(ctx, request, result, metrics, attempt)
+		if outcome == attemptCanceled {
 			return result
-		default:
 		}
-
-		// Add delay for retry attempts
-		if attempt > 0 {
-			e.logger.Debug("Retrying secret retrieval",
-				"key", request.Key,
-				"attempt", attempt+1,
-				"delay", e.config.RetryDelay)
-
-			select {
-			case <-ctx.Done():
-				result.Error = ctx.Err()
-				e.metrics.incrementFailedRequests()
-				return result
-			case <-time.After(e.config.RetryDelay):
-			}
-		}
-
-		// Perform the actual secret retrieval
-		secret, err := e.performSecretRetrieval(ctx, request)
-		if err != nil {
-			result.Error = err
-			e.logger.Debug("Secret retrieval attempt failed",
-				"key", request.Key,
-				"attempt", attempt+1,
-				"error", e.sanitizeError(err))
-
-			// Check if this is a retryable error
-			if !e.isRetryableError(err) || attempt == e.config.MaxRetries {
-				break
-			}
-			continue
-		}
-
-		// Success - process and validate the secret
-		processedSecret, err := e.processSecretValue(secret, request)
-		if err != nil {
-			result.Error = fmt.Errorf("secret processing failed for key '%s': %w",
-				request.Key, err)
-			// Clean up the original secret
-			if secret != nil {
-				if destroyErr := secret.Destroy(); destroyErr != nil {
-					e.logger.Error("Failed to destroy secret during cleanup", "error", destroyErr)
-				}
-			}
+		if outcome == attemptDone {
 			break
 		}
-
-		// Store the processed secret
-		result.Value = processedSecret
-
-		// Destroy the original secret to avoid duplication in memory
-		if secret != nil {
-			if destroyErr := secret.Destroy(); destroyErr != nil {
-				e.logger.Error("Failed to destroy original secret after processing", "error", destroyErr)
-			}
-		}
-		break
 	}
 
-	// Update metrics
+	e.finalizeRetrievalMetrics(result, metrics)
+
+	return result
+}
+
+// attemptSecretRetrieval performs one retrieval attempt, updating result and
+// reporting whether the caller should return, retry, or stop.
+func (e *Engine) attemptSecretRetrieval(
+	ctx context.Context, request *SecretRequest,
+	result *SecretResult, metrics *RetrievalMetrics, attempt int,
+) attemptOutcome {
+	metrics.Attempts++
+
+	select {
+	case <-ctx.Done():
+		result.Error = fmt.Errorf("secret retrieval canceled for key '%s': %w",
+			request.Key, ctx.Err())
+		e.metrics.incrementFailedRequests()
+		return attemptCanceled
+	default:
+	}
+
+	// Add delay for retry attempts
+	if attempt > 0 {
+		e.logger.Debug("Retrying secret retrieval",
+			"key", request.Key,
+			"attempt", attempt+1,
+			"delay", e.config.RetryDelay)
+
+		select {
+		case <-ctx.Done():
+			result.Error = fmt.Errorf(
+				"secret retrieval canceled for key '%s' during retry backoff: %w",
+				request.Key, ctx.Err())
+			e.metrics.incrementFailedRequests()
+			return attemptCanceled
+		case <-time.After(e.config.RetryDelay):
+		}
+	}
+
+	// Perform the actual secret retrieval
+	secret, err := e.performSecretRetrieval(ctx, request)
+	if err != nil {
+		result.Error = err
+		e.logger.Debug("Secret retrieval attempt failed",
+			"key", request.Key,
+			"attempt", attempt+1,
+			"error", e.sanitizeError(err))
+
+		// Check if this is a retryable error
+		if !e.isRetryableError(err) || attempt == e.config.MaxRetries {
+			return attemptDone
+		}
+		return attemptRetry
+	}
+
+	// Success - process and validate the secret
+	processedSecret, err := e.processSecretValue(secret, request)
+	if err != nil {
+		result.Error = fmt.Errorf("secret processing failed for key '%s': %w",
+			request.Key, err)
+		if secret != nil {
+			if destroyErr := secret.Destroy(); destroyErr != nil {
+				e.logger.Error("Failed to destroy secret during cleanup", "error", destroyErr)
+			}
+		}
+		return attemptDone
+	}
+
+	// Store the processed secret. Clear any error recorded by an earlier
+	// failed attempt so a request that succeeds on retry is not reported as
+	// failed by finalizeRetrievalMetrics or skipped downstream.
+	result.Error = nil
+	result.Value = processedSecret
+
+	// Destroy the original secret to avoid duplication in memory
+	if secret != nil {
+		if destroyErr := secret.Destroy(); destroyErr != nil {
+			e.logger.Error("Failed to destroy original secret after processing", "error", destroyErr)
+		}
+	}
+
+	return attemptDone
+}
+
+// finalizeRetrievalMetrics records timing and success/failure metrics after the
+// retry loop completes.
+func (e *Engine) finalizeRetrievalMetrics(result *SecretResult, metrics *RetrievalMetrics) {
 	metrics.EndTime = time.Now()
 	metrics.Duration = metrics.EndTime.Sub(metrics.StartTime)
 
@@ -524,18 +583,14 @@ func (e *Engine) retrieveSingleSecret(ctx context.Context, request *SecretReques
 			metrics.FieldSize = result.Value.Len()
 		}
 	}
-
-	return result
 }
 
 // performSecretRetrieval performs the actual secret retrieval from 1Password.
 func (e *Engine) performSecretRetrieval(ctx context.Context, request *SecretRequest) (*security.SecureString, error) {
-	// Validate request
 	if err := e.validateSecretRequest(request); err != nil {
 		return nil, fmt.Errorf("invalid secret request: %w", err)
 	}
 
-	// Create request-specific timeout
 	reqCtx, cancel := context.WithTimeout(ctx, e.config.RequestTimeout)
 	defer cancel()
 
@@ -552,7 +607,6 @@ func (e *Engine) performSecretRetrieval(ctx context.Context, request *SecretRequ
 	if err != nil {
 		// Preserve ActionableError type while adding context
 		if actionableErr, ok := err.(*errors.ActionableError); ok {
-			// Create a new ActionableError with additional context
 			newErr := errors.Wrap(actionableErr.Code,
 				fmt.Sprintf("failed to retrieve secret for key '%s': %s", request.Key, actionableErr.Message),
 				actionableErr.Cause)
@@ -599,10 +653,8 @@ func (fp *FieldProcessor) ProcessField(secret *security.SecureString, request *S
 		return security.NewSecureStringFromString("")
 	}
 
-	// Get the raw value
 	rawValue := secret.String()
 
-	// Validate length
 	if len(rawValue) > fp.config.MaxSecretLength {
 		return nil, fmt.Errorf("secret too large for key '%s': %d bytes (max %d)",
 			request.Key, len(rawValue), fp.config.MaxSecretLength)
@@ -625,12 +677,10 @@ func (fp *FieldProcessor) ProcessField(secret *security.SecureString, request *S
 		processedValue = fp.normalizeUnicode(processedValue)
 	}
 
-	// Check for empty result after processing
 	if processedValue == "" && !fp.config.AllowEmptyFields {
 		return nil, fmt.Errorf("secret became empty after processing for key '%s'", request.Key)
 	}
 
-	// Create new secure string with processed value
 	result, err := security.NewSecureStringFromString(processedValue)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create secure string for key '%s': %w",
@@ -805,8 +855,17 @@ func (e *Engine) GetMetrics() map[string]interface{} {
 func (e *Engine) Destroy() error {
 	e.logger.Debug("Destroying secret retrieval engine")
 
-	// Log final metrics
 	e.logger.Info("Secret retrieval engine metrics", e.GetMetrics())
+
+	// The engine holds the long-lived reference to the CLI client, which
+	// owns the service-account token (a locked SecureString). Nothing else
+	// destroys it, so release it here via the optional Destroy capability
+	// (the interface does not mandate it). Destroy is idempotent.
+	if destroyer, ok := e.cliClient.(interface{ Destroy() error }); ok {
+		if err := destroyer.Destroy(); err != nil {
+			e.logger.Debug("Failed to destroy CLI client", "error", err)
+		}
+	}
 
 	return nil
 }

@@ -72,7 +72,6 @@ func (m *MockCLIClient) GetSecret(ctx context.Context, vault, item, field string
 
 	key := fmt.Sprintf("%s/%s/%s", vault, item, field)
 
-	// Check for configured delay
 	if delay, exists := m.delays[key]; exists {
 		select {
 		case <-ctx.Done():
@@ -81,12 +80,10 @@ func (m *MockCLIClient) GetSecret(ctx context.Context, vault, item, field string
 		}
 	}
 
-	// Check for configured error
 	if err, exists := m.errors[key]; exists {
 		return nil, err
 	}
 
-	// Return configured secret
 	if secret, exists := m.secrets[key]; exists {
 		// Return a copy to avoid modification issues
 		return security.NewSecureStringFromString(secret.String())
@@ -116,7 +113,6 @@ func (m *MockCLIClient) Authenticate(_ context.Context) error {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	// Check for configured error
 	if err, exists := m.errors["auth"]; exists {
 		return err
 	}
@@ -129,7 +125,6 @@ func (m *MockCLIClient) ResolveVault(_ context.Context, identifier string) (*aut
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	// Check for configured error
 	if err, exists := m.errors["vault:"+identifier]; exists {
 		return nil, err
 	}
@@ -369,10 +364,8 @@ func (m *MockSecretStore) AddSecret(vault, item, field, value string) error {
 		return err
 	}
 
-	// Clean up any existing secret
 	if existing, exists := m.secrets[key]; exists {
 		if err := existing.Destroy(); err != nil {
-			// Log error but don't fail the mock operation
 			fmt.Printf("Warning: Failed to destroy existing secret in mock: %v\n", err)
 		}
 	}
@@ -406,7 +399,6 @@ func (m *MockSecretStore) GetSecret(ctx context.Context, vault, item, field stri
 
 	key := m.makeKey(vault, item, field)
 
-	// Check for configured delay
 	if delay, exists := m.delays[key]; exists {
 		select {
 		case <-ctx.Done():
@@ -415,12 +407,10 @@ func (m *MockSecretStore) GetSecret(ctx context.Context, vault, item, field stri
 		}
 	}
 
-	// Check for configured error
 	if err, exists := m.errors[key]; exists {
 		return nil, err
 	}
 
-	// Return configured secret
 	if secret, exists := m.secrets[key]; exists {
 		// Return a copy to avoid modification issues
 		return security.NewSecureStringFromString(secret.String())
@@ -623,7 +613,6 @@ func (m *AdvancedMockCLI) GetSecret(ctx context.Context, vault, item, field stri
 		return nil, err
 	}
 
-	// Check for injected failures
 	if m.failureInjector.ShouldFail(vault, item, field) {
 		return nil, fmt.Errorf("injected failure for %s", key)
 	}
@@ -716,7 +705,6 @@ func (m *AdvancedMockCLI) GetItem(_ context.Context, vault, item string) (*cli.I
 func (m *AdvancedMockCLI) Destroy() error {
 	if m.store != nil {
 		if err := m.store.Destroy(); err != nil {
-			// Log error but don't fail the mock cleanup
 			fmt.Printf("Warning: Failed to destroy store in mock: %v\n", err)
 		}
 	}
