@@ -69,7 +69,6 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		cfg.LogLevel = "warn" // Default log level
 	}
 
-	// Validate configuration before proceeding
 	if err := cfg.Validate(); err != nil {
 		// Check if it's a token-related error for proper error code
 		if cfg.Token == "" {
@@ -101,7 +100,6 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		logger: log,
 	}
 
-	// Initialize monitoring system
 	monitorConfig := monitoring.DefaultConfig()
 	monitor, err := monitoring.New(log, monitorConfig)
 	if err != nil {
@@ -113,7 +111,6 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 	}
 	app.monitor = monitor
 
-	// Initialize components
 	if err := app.initializeComponents(); err != nil {
 		return nil, errors.Wrap(
 			errors.ErrCodeInternalError,
@@ -131,7 +128,53 @@ func (a *App) initializeComponents() error {
 		"component": "cli_manager",
 	})
 
-	// Initialize CLI manager
+	if err := a.initCLIManager(op); err != nil {
+		return err
+	}
+
+	token, err := a.initSecureToken(op)
+	if err != nil {
+		return err
+	}
+
+	cliClient, err := a.initAuthManager(op, token)
+	if err != nil {
+		return err
+	}
+
+	// From here on the CLI client (and the secure token it owns) must be
+	// released on failure: the caller never receives an App, so it can never
+	// call Destroy().
+	if err := a.initSecretsEngine(op, cliClient); err != nil {
+		a.destroyCLIClient(cliClient)
+		return err
+	}
+
+	if err := a.initOutputManager(op); err != nil {
+		a.destroyCLIClient(cliClient)
+		return err
+	}
+
+	op.CompleteOperation(map[string]interface{}{
+		"components_initialized": 5,
+	})
+	return nil
+}
+
+// destroyCLIClient releases a CLI client, and the secure token it owns, when
+// initialization fails part-way through.
+func (a *App) destroyCLIClient(cliClient cli.ClientInterface) {
+	if destroyer, ok := cliClient.(interface{ Destroy() error }); ok {
+		if err := destroyer.Destroy(); err != nil {
+			a.logger.Debug("Failed to destroy CLI client during cleanup",
+				"error", err)
+		}
+	}
+}
+
+// initCLIManager creates the CLI manager, enabling test mode for dummy tokens
+// or explicit mock mode.
+func (a *App) initCLIManager(op *monitoring.OperationContext) error {
 	cliVersion := cli.DefaultCLIVersion
 	if a.config.CLIVersion != "" {
 		cliVersion = a.config.CLIVersion
@@ -165,23 +208,33 @@ func (a *App) initializeComponents() error {
 		a.cliManager.MarkBinaryValid()
 	}
 
-	// Create secure token
+	return nil
+}
+
+// initSecureToken wraps the configured token in a secure string.
+func (a *App) initSecureToken(op *monitoring.OperationContext) (*security.SecureString, error) {
 	token, err := security.NewSecureStringFromString(a.config.Token)
 	if err != nil {
 		op.FailOperation(err)
-		return errors.NewAuthenticationError(
+		return nil, errors.NewAuthenticationError(
 			errors.ErrCodeTokenInvalid,
 			"Failed to create secure token",
 			err,
 		)
 	}
+	return token, nil
+}
 
-	// Initialize auth manager
+// initAuthManager creates the CLI client and authentication manager, returning
+// the CLI client for reuse by the secrets engine.
+func (a *App) initAuthManager(
+	op *monitoring.OperationContext,
+	token *security.SecureString,
+) (cli.ClientInterface, error) {
 	authConfig := auth.DefaultConfig()
 	authConfig.Token = token
 	authConfig.Timeout = time.Duration(a.config.Timeout) * time.Second
 
-	// Create CLI client for auth manager
 	clientConfig := &cli.ClientConfig{
 		Token:   token,
 		Timeout: time.Duration(a.config.Timeout) * time.Second,
@@ -190,33 +243,45 @@ func (a *App) initializeComponents() error {
 	cliClient, err := mock.NewClientWithMode(a.cliManager, clientConfig)
 	if err != nil {
 		op.FailOperation(err)
-		return errors.NewCLIError(
+		// The client never took ownership of the token, so release it here.
+		if destroyErr := token.Destroy(); destroyErr != nil {
+			a.logger.Debug("Failed to destroy token during cleanup",
+				"error", destroyErr)
+		}
+		return nil, errors.NewCLIError(
 			errors.ErrCodeCLIExecutionFailed,
 			"Failed to create CLI client",
 			err,
 		)
 	}
 
-	// Create CLI adapter for auth manager
 	cliAdapter := auth.NewCLIClientAdapter(cliClient)
 
 	a.authManager, err = auth.NewManager(cliAdapter, a.logger, authConfig)
 	if err != nil {
 		op.FailOperation(err)
-		return errors.NewAuthenticationError(
+		// Release the client, and the token it owns, since initialization
+		// failed and no App will be returned to clean them up.
+		a.destroyCLIClient(cliClient)
+		return nil, errors.NewAuthenticationError(
 			errors.ErrCodeAuthFailed,
 			"Failed to create authentication manager",
 			err,
 		)
 	}
 
-	// Initialize secrets engine
+	return cliClient, nil
+}
+
+// initSecretsEngine creates the secrets engine backed by the shared CLI client.
+func (a *App) initSecretsEngine(op *monitoring.OperationContext, cliClient cli.ClientInterface) error {
 	secretsConfig := secrets.DefaultConfig()
 	secretsConfig.MaxConcurrentRequests = 5
 	secretsConfig.RequestTimeout = 30 * time.Second
 	secretsConfig.AtomicOperations = true
 	secretsConfig.ZeroSecretsOnError = true
 
+	var err error
 	a.secretsEngine, err = secrets.NewEngine(a.authManager, cliClient, a.logger, secretsConfig)
 	if err != nil {
 		op.FailOperation(err)
@@ -226,13 +291,17 @@ func (a *App) initializeComponents() error {
 			err,
 		)
 	}
+	return nil
+}
 
-	// Initialize output manager
+// initOutputManager creates the output manager used to publish results.
+func (a *App) initOutputManager(op *monitoring.OperationContext) error {
 	outputConfig := output.DefaultConfig()
 	outputConfig.ReturnType = a.config.ReturnType
 	outputConfig.AtomicOperations = true
 	outputConfig.MaskAllSecrets = true
 
+	var err error
 	a.outputManager, err = output.NewManager(a.config, a.logger, outputConfig)
 	if err != nil {
 		op.FailOperation(err)
@@ -242,10 +311,6 @@ func (a *App) initializeComponents() error {
 			err,
 		)
 	}
-
-	op.CompleteOperation(map[string]interface{}{
-		"components_initialized": 5,
-	})
 	return nil
 }
 
@@ -259,23 +324,70 @@ func (a *App) Run(ctx context.Context) error {
 
 // runWithMonitoring executes the main application logic with comprehensive monitoring
 func (a *App) runWithMonitoring(ctx context.Context) error {
-	// Start monitoring the main operation
 	mainOp := a.monitor.StartOperation("secrets_retrieval", map[string]interface{}{
 		"timeout_seconds": a.config.Timeout,
 	})
 
-	// Set up timeout context
 	timeoutCtx, cancel := context.WithTimeout(ctx, time.Duration(a.config.Timeout)*time.Second)
 	defer cancel()
 
 	// Use the timeout context for operations
 	ctx = timeoutCtx
 
-	// Log application start
 	a.logger.InfoSensitive("Starting 1Password secrets retrieval",
 		"config", a.config.SanitizeForLogging())
 
-	// Validate GitHub Actions environment
+	if err := a.validateGitHubEnvironment(mainOp); err != nil {
+		return err
+	}
+
+	a.logger.GitHubGroup("🔐 Retrieving secrets from 1Password")
+	defer a.logger.GitHubEndGroup()
+
+	a.logger.Info("Configuration validated successfully")
+
+	a.logOperationType(mainOp)
+
+	requests, err := a.parseSecretRequests(mainOp)
+	if err != nil {
+		return err
+	}
+
+	if err = a.ensureCLIAvailable(ctx, mainOp); err != nil {
+		return err
+	}
+
+	if err = a.authenticate(ctx, mainOp); err != nil {
+		return err
+	}
+
+	vaultMetadata, err := a.resolveVault(ctx, mainOp)
+	if err != nil {
+		return err
+	}
+
+	result, err := a.retrieveSecrets(ctx, mainOp, requests, vaultMetadata)
+	if err != nil {
+		return err
+	}
+	// Release the batch result's locked secure memory once processing is
+	// done; the output manager keeps its own copies. This avoids pool
+	// growth across tests and repeated in-process runs.
+	defer a.destroySecretResults(result)
+
+	outputResult, err := a.processOutputs(mainOp, result)
+	if err != nil {
+		return err
+	}
+
+	a.recordCompletionMetrics(mainOp, outputResult)
+
+	return nil
+}
+
+// validateGitHubEnvironment ensures the required GitHub Actions environment is
+// present before any secret work begins.
+func (a *App) validateGitHubEnvironment(mainOp *monitoring.OperationContext) error {
 	if err := a.config.ValidateGitHubEnvironment(); err != nil {
 		mainOp.FailOperation(err)
 		return errors.NewConfigurationError(
@@ -284,14 +396,12 @@ func (a *App) runWithMonitoring(ctx context.Context) error {
 			err,
 		)
 	}
+	return nil
+}
 
-	// Start GitHub Actions group for better log organization
-	a.logger.GitHubGroup("🔐 Retrieving secrets from 1Password")
-	defer a.logger.GitHubEndGroup()
-
-	// Log the process
-	a.logger.Info("Configuration validated successfully")
-
+// logOperationType records whether this run handles a single or multiple
+// secrets, annotating the main operation with the relevant context.
+func (a *App) logOperationType(mainOp *monitoring.OperationContext) {
 	if a.config.IsSingleRecord() {
 		a.logger.Info("Processing single secret retrieval")
 		mainOp.AddContext("operation_type", "single_secret")
@@ -301,14 +411,16 @@ func (a *App) runWithMonitoring(ctx context.Context) error {
 		mainOp.AddContext("operation_type", "multiple_secrets")
 		mainOp.AddContext("secrets_count", len(a.config.Records))
 	}
+}
 
-	// Parse configuration records into secret requests
+// parseSecretRequests converts the configured records into secret requests.
+func (a *App) parseSecretRequests(mainOp *monitoring.OperationContext) ([]*secrets.SecretRequest, error) {
 	parseOp := a.monitor.StartOperation("parse_requests", nil)
 	requests, err := secrets.ParseRecordsToRequests(a.config)
 	if err != nil {
 		parseOp.FailOperation(err)
 		mainOp.FailOperation(err)
-		return errors.NewConfigurationError(
+		return nil, errors.NewConfigurationError(
 			errors.ErrCodeInvalidRecord,
 			"Failed to parse secret requests",
 			err,
@@ -319,8 +431,11 @@ func (a *App) runWithMonitoring(ctx context.Context) error {
 	})
 
 	a.logger.Info("Parsed secret requests", "count", len(requests))
+	return requests, nil
+}
 
-	// Ensure CLI is available and ready
+// ensureCLIAvailable makes sure the 1Password CLI is present and ready.
+func (a *App) ensureCLIAvailable(ctx context.Context, mainOp *monitoring.OperationContext) error {
 	cliOp := a.monitor.StartOperation("ensure_cli", nil)
 	a.logger.Info("Ensuring 1Password CLI is available")
 	if cliErr := a.cliManager.EnsureCLI(ctx); cliErr != nil {
@@ -347,8 +462,11 @@ func (a *App) runWithMonitoring(ctx context.Context) error {
 		)
 	}
 	cliOp.CompleteOperation(nil)
+	return nil
+}
 
-	// Authenticate with 1Password
+// authenticate performs authentication with 1Password and records the outcome.
+func (a *App) authenticate(ctx context.Context, mainOp *monitoring.OperationContext) error {
 	authOp := a.monitor.StartOperation("authenticate", nil)
 	a.logger.Info("Authenticating with 1Password")
 	if authErr := a.authManager.Authenticate(ctx); authErr != nil {
@@ -366,8 +484,12 @@ func (a *App) runWithMonitoring(ctx context.Context) error {
 	}
 	authOp.CompleteOperation(nil)
 	a.monitor.LogAuthEvent(audit.EventAuthSuccess, audit.OutcomeSuccess, "Successfully authenticated with 1Password", nil)
+	return nil
+}
 
-	// Resolve vault to ensure it exists and is accessible
+// resolveVault resolves the configured vault, ensuring it exists and is
+// accessible.
+func (a *App) resolveVault(ctx context.Context, mainOp *monitoring.OperationContext) (*auth.VaultMetadata, error) {
 	vaultOp := a.monitor.StartOperation("resolve_vault", map[string]interface{}{
 		"vault_identifier": a.config.Vault,
 	})
@@ -382,7 +504,7 @@ func (a *App) runWithMonitoring(ctx context.Context) error {
 				"vault_identifier": a.config.Vault,
 				"error":            err.Error(),
 			})
-		return errors.NewAuthenticationError(
+		return nil, errors.NewAuthenticationError(
 			errors.ErrCodeVaultNotFound,
 			"Failed to resolve vault",
 			err,
@@ -402,8 +524,16 @@ func (a *App) runWithMonitoring(ctx context.Context) error {
 			"vault_id":   vaultMetadata.ID,
 			"vault_name": vaultMetadata.Name,
 		})
+	return vaultMetadata, nil
+}
 
-	// Retrieve secrets using the engine
+// retrieveSecrets fetches the requested secrets from 1Password.
+func (a *App) retrieveSecrets(
+	ctx context.Context,
+	mainOp *monitoring.OperationContext,
+	requests []*secrets.SecretRequest,
+	vaultMetadata *auth.VaultMetadata,
+) (*secrets.BatchResult, error) {
 	secretsOp := a.monitor.StartOperation("retrieve_secrets", map[string]interface{}{
 		"secrets_count": len(requests),
 	})
@@ -417,7 +547,7 @@ func (a *App) runWithMonitoring(ctx context.Context) error {
 			map[string]interface{}{
 				"error": err.Error(),
 			})
-		return errors.NewSecretError(
+		return nil, errors.NewSecretError(
 			errors.ErrCodeSecretAccessDenied,
 			"Secret retrieval failed",
 			err,
@@ -433,8 +563,11 @@ func (a *App) runWithMonitoring(ctx context.Context) error {
 		"success_count", result.SuccessCount,
 		"error_count", result.ErrorCount,
 		"duration", result.TotalDuration)
+	return result, nil
+}
 
-	// Process secrets and set outputs using the output manager
+// processOutputs publishes the retrieved secrets and reports processing errors.
+func (a *App) processOutputs(mainOp *monitoring.OperationContext, result *secrets.BatchResult) (*output.Result, error) {
 	outputOp := a.monitor.StartOperation("process_outputs", map[string]interface{}{
 		"success_count": result.SuccessCount,
 	})
@@ -443,7 +576,7 @@ func (a *App) runWithMonitoring(ctx context.Context) error {
 	if err != nil {
 		outputOp.FailOperation(err)
 		mainOp.FailOperation(err)
-		return errors.NewOutputError(
+		return nil, errors.NewOutputError(
 			errors.ErrCodeOutputFailed,
 			"Failed to process secrets for output",
 			err,
@@ -455,7 +588,6 @@ func (a *App) runWithMonitoring(ctx context.Context) error {
 		"values_masked": outputResult.ValuesMasked,
 	})
 
-	// Log output processing results
 	a.logger.Info("Output processing completed",
 		"outputs_set", outputResult.OutputsSet,
 		"env_vars_set", outputResult.EnvVarsSet,
@@ -463,14 +595,37 @@ func (a *App) runWithMonitoring(ctx context.Context) error {
 		"success", outputResult.Success,
 		"errors", len(outputResult.Errors))
 
-	// Log any errors from output processing
 	for i, outputErr := range outputResult.Errors {
 		a.logger.ErrorSensitive("Output processing error", "index", i, "error", outputErr)
 		a.monitor.HandleError(outputErr, fmt.Sprintf("Output processing error %d", i), map[string]interface{}{
 			"error_index": i,
 		})
 	}
+	return outputResult, nil
+}
 
+// destroySecretResults releases the secure values held by a batch result
+// once they have been copied into the output manager, preventing
+// locked-memory accumulation in long-running or repeated in-process runs.
+// SecureString.Destroy is idempotent, so this is safe even if a value was
+// already released elsewhere.
+func (a *App) destroySecretResults(result *secrets.BatchResult) {
+	if result == nil {
+		return
+	}
+	for _, secretResult := range result.Results {
+		if secretResult == nil || secretResult.Value == nil {
+			continue
+		}
+		if err := secretResult.Value.Destroy(); err != nil {
+			a.logger.Debug("Failed to destroy secret value", "error", err)
+		}
+	}
+}
+
+// recordCompletionMetrics records component metrics and completes the main
+// operation on the successful path.
+func (a *App) recordCompletionMetrics(mainOp *monitoring.OperationContext, outputResult *output.Result) {
 	// Record component metrics
 	authMetrics := a.authManager.GetMetrics()
 	secretsMetrics := a.secretsEngine.GetMetrics()
@@ -490,8 +645,6 @@ func (a *App) runWithMonitoring(ctx context.Context) error {
 		"env_vars_set":  outputResult.EnvVarsSet,
 		"values_masked": outputResult.ValuesMasked,
 	})
-
-	return nil
 }
 
 // GetVersionInfo returns version information using provided version data

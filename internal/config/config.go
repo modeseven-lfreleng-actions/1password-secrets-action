@@ -121,7 +121,6 @@ func LoadWithOptions(opts LoadOptions) (*Config, error) {
 		}
 	}
 
-	// Load from environment variables first
 	if !opts.IgnoreEnv {
 		config.loadFromEnvironment()
 	}
@@ -134,12 +133,10 @@ func LoadWithOptions(opts LoadOptions) (*Config, error) {
 		return config, nil
 	}
 
-	// Validate configuration
 	if err := config.Validate(); err != nil {
 		return nil, fmt.Errorf("configuration validation failed: %w", err)
 	}
 
-	// Parse record specification
 	if err := config.parseRecords(); err != nil {
 		return nil, fmt.Errorf("failed to parse record specification: %w", err)
 	}
@@ -280,7 +277,6 @@ func (c *Config) loadFromFile(configFile string) error {
 		return fmt.Errorf("failed to read config file: %w", err)
 	}
 
-	// Create temporary config for file data
 	fileConfig := &Config{}
 	if err := yaml.Unmarshal(data, fileConfig); err != nil {
 		return fmt.Errorf("failed to parse config file: %w", err)
@@ -321,7 +317,6 @@ func (c *Config) Save(configPath string) error {
 		return fmt.Errorf("failed to marshal config: %w", err)
 	}
 
-	// Write to file with secure permissions
 	if err := os.WriteFile(configPath, data, 0600); err != nil {
 		return fmt.Errorf("failed to write config file: %w", err)
 	}
@@ -361,7 +356,6 @@ func (c *Config) GetTimeout(operation string) time.Duration {
 
 // Refresh reloads configuration from all sources
 func (c *Config) Refresh() error {
-	// Save current critical values
 	currentToken := c.Token
 	currentConfigFile := c.ConfigFile
 
@@ -487,7 +481,6 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("failed to initialize validator: %w", err)
 	}
 
-	// Validate core inputs via central validator
 	if err := v.ValidateToken(c.Token); err != nil {
 		return err
 	}

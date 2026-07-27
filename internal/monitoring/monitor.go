@@ -102,7 +102,6 @@ func (m *Monitor) StartOperation(name string, context map[string]interface{}) *O
 	m.metrics.OperationsStarted++
 	m.mu.Unlock()
 
-	// Log operation start
 	m.logger.LogOperationStart(name, context)
 
 	// Create audit operation if audit is enabled
@@ -133,13 +132,11 @@ func (op *OperationContext) CompleteOperation(result map[string]interface{}) {
 
 	duration := time.Since(op.startTime)
 
-	// Update metrics
 	op.monitor.mu.Lock()
 	op.monitor.metrics.OperationsCompleted++
 	op.monitor.updateDurationMetrics(duration)
 	op.monitor.mu.Unlock()
 
-	// Log completion
 	combinedContext := make(map[string]interface{})
 	for k, v := range op.context {
 		combinedContext[k] = v
@@ -168,16 +165,13 @@ func (op *OperationContext) FailOperation(err error) {
 
 	duration := time.Since(op.startTime)
 
-	// Update metrics
 	op.monitor.mu.Lock()
 	op.monitor.metrics.OperationsFailed++
 	op.monitor.updateDurationMetrics(duration)
 	op.monitor.mu.Unlock()
 
-	// Log failure
 	op.monitor.logger.LogOperationFailed(op.operationName, duration, err, op.context)
 
-	// Handle error with comprehensive reporting
 	op.monitor.HandleError(err, fmt.Sprintf("Operation %s failed", op.operationName), op.context)
 
 	// Fail audit operation
@@ -234,7 +228,6 @@ func (m *Monitor) HandleError(err error, context string, details map[string]inte
 		logContext[k] = v
 	}
 
-	// Log error with comprehensive details
 	m.logger.LogError(err, context, logContext)
 
 	// Audit error event
@@ -274,7 +267,6 @@ func (m *Monitor) HandleRecoveredPanic(recovered interface{}, context string, de
 	m.metrics.ErrorsRecorded++
 	m.mu.Unlock()
 
-	// Create context for logging
 	logContext := map[string]interface{}{
 		"panic_value": fmt.Sprintf("%v", recovered),
 		"context":     context,
@@ -285,7 +277,6 @@ func (m *Monitor) HandleRecoveredPanic(recovered interface{}, context string, de
 		logContext[k] = v
 	}
 
-	// Log recovered panic
 	m.logger.LogRecoveredPanic(recovered, logContext)
 
 	// Audit panic recovery
@@ -317,7 +308,6 @@ func (m *Monitor) LogSecurityEvent(event string, severity string, details map[st
 	m.metrics.SecurityEventsLogged++
 	m.mu.Unlock()
 
-	// Log security event
 	m.logger.LogSecurityEvent(event, severity, details)
 
 	// Audit security event
@@ -346,7 +336,6 @@ func (m *Monitor) LogSecurityEvent(event string, severity string, details map[st
 
 // LogAuthEvent logs authentication-related events
 func (m *Monitor) LogAuthEvent(eventType audit.EventType, outcome audit.Outcome, message string, details map[string]interface{}) {
-	// Log to structured logger
 	logData := map[string]interface{}{
 		"auth_event": string(eventType),
 		"outcome":    string(outcome),
@@ -372,7 +361,6 @@ func (m *Monitor) LogAuthEvent(eventType audit.EventType, outcome audit.Outcome,
 
 // LogVaultEvent logs vault-related events
 func (m *Monitor) LogVaultEvent(eventType audit.EventType, outcome audit.Outcome, message string, vaultResource audit.Resource, details map[string]interface{}) {
-	// Log to structured logger
 	logData := map[string]interface{}{
 		"vault_event": string(eventType),
 		"outcome":     string(outcome),
@@ -472,7 +460,6 @@ func (m *Monitor) GetMetrics() map[string]interface{} {
 func (m *Monitor) GenerateFinalReport() {
 	metrics := m.GetMetrics()
 
-	// Log final metrics
 	m.logger.Info("Final monitoring report", metrics)
 
 	// Generate GitHub Actions summary

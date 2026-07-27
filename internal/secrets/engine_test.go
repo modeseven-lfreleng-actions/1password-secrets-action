@@ -18,6 +18,7 @@ import (
 	"github.com/modeseven-lfreleng-actions/1password-secrets-action/internal/config"
 	"github.com/modeseven-lfreleng-actions/1password-secrets-action/internal/errors"
 	"github.com/modeseven-lfreleng-actions/1password-secrets-action/internal/logger"
+	"github.com/modeseven-lfreleng-actions/1password-secrets-action/pkg/security"
 )
 
 func TestDefaultConfig(t *testing.T) {
@@ -1005,4 +1006,68 @@ func TestEngine_RealWorldScenarios(t *testing.T) {
 			assert.Len(t, results.Results, tt.expectCount, tt.description)
 		})
 	}
+}
+
+func TestEngine_Destroy_ReleasesCLIClient(t *testing.T) {
+	mockAuth := NewMockAuthManager()
+	mockCLI := NewMockCLIClient()
+	log := createTestLogger(t)
+
+	// SetSecret allocates a SecureString tracked in the secure-memory pool.
+	require.NoError(t, mockCLI.SetSecret("v", "i", "f", "secret-value"))
+
+	engine, err := NewEngine(mockAuth, mockCLI, log, DefaultConfig())
+	require.NoError(t, err)
+
+	before := security.GetPoolStats().ActiveSecrets
+	require.NoError(t, engine.Destroy())
+	after := security.GetPoolStats().ActiveSecrets
+
+	// Engine.Destroy must propagate to the borrowed CLI client, which owns
+	// (and destroys) its secure values; otherwise they leak until exit.
+	assert.Less(t, after, before,
+		"engine.Destroy did not release the CLI client's secure values")
+}
+
+func TestEngine_RetrieveSecrets_ClearsErrorAfterSuccessfulRetry(t *testing.T) {
+	mockAuth := NewMockAuthManager()
+	mockCLI := NewAdvancedMockCLI()
+	log := createTestLogger(t)
+
+	require.NoError(t, mockCLI.SetSecret("test-vault", "database", "password", "secret-value"))
+	// Fail only the first attempt; the retry must succeed.
+	mockCLI.InjectFailures("test-vault", "database", "password", 1)
+
+	cfg := DefaultConfig()
+	cfg.MaxRetries = 2
+	cfg.RetryDelay = time.Millisecond
+
+	engine, err := NewEngine(mockAuth, mockCLI, log, cfg)
+	require.NoError(t, err)
+	defer func() { _ = engine.Destroy() }()
+
+	requests := []*SecretRequest{
+		{
+			Key:       "db_password",
+			Vault:     "test-vault",
+			ItemName:  "database",
+			FieldName: "password",
+			Required:  true,
+		},
+	}
+
+	result, err := engine.RetrieveSecrets(context.Background(), requests)
+	require.NoError(t, err)
+
+	secretResult := result.Results["db_password"]
+	require.NotNil(t, secretResult)
+
+	// A request that succeeds on retry must not retain the earlier attempt's
+	// error, otherwise it is counted as failed and skipped by consumers.
+	assert.NoError(t, secretResult.Error)
+	require.NotNil(t, secretResult.Value)
+	assert.Equal(t, "secret-value", secretResult.Value.String())
+	assert.Equal(t, 1, result.SuccessCount)
+	assert.Equal(t, 0, result.ErrorCount)
+	assert.Empty(t, result.Errors)
 }

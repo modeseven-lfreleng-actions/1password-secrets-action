@@ -92,6 +92,14 @@ func NewMockClient(config *cli.ClientConfig) (*MockClient, error) {
 
 // initializeTestData sets up default test vaults, items, and secrets.
 func (c *MockClient) initializeTestData() {
+	c.seedVaults()
+	c.seedTestVaultItems()
+	c.seedDevVaultItems()
+	c.seedSecrets()
+}
+
+// seedVaults registers the default set of mock vaults referenced by tests.
+func (c *MockClient) seedVaults() {
 	// Default test vault
 	testVault := cli.VaultInfo{
 		ID:          "test-vault-1",
@@ -118,7 +126,10 @@ func (c *MockClient) initializeTestData() {
 	}
 	c.vaults["private-vault-1"] = privateVault
 	c.vaults["Private"] = privateVault
+}
 
+// seedTestVaultItems registers the mock items belonging to the default test vault.
+func (c *MockClient) seedTestVaultItems() {
 	// Test items in default vault
 	if c.items["test-vault-1"] == nil {
 		c.items["test-vault-1"] = make(map[string]cli.ItemInfo)
@@ -185,7 +196,10 @@ func (c *MockClient) initializeTestData() {
 	}
 	c.items["test-vault-1"]["Database"] = databaseItem
 	c.items["test-vault-1"]["database-1"] = databaseItem
+}
 
+// seedDevVaultItems registers the mock items belonging to the Development vault.
+func (c *MockClient) seedDevVaultItems() {
 	// Initialize items for Development vault
 	if c.items["dev-vault-1"] == nil {
 		c.items["dev-vault-1"] = make(map[string]cli.ItemInfo)
@@ -205,7 +219,10 @@ func (c *MockClient) initializeTestData() {
 	}
 	c.items["dev-vault-1"]["App Config"] = appConfigItem
 	c.items["dev-vault-1"]["app-config-1"] = appConfigItem
+}
 
+// seedSecrets registers the mock secret values referenced by tests.
+func (c *MockClient) seedSecrets() {
 	// Test secrets (matching integration test patterns).
 	//
 	// NOTE: Every value below is assembled at runtime via

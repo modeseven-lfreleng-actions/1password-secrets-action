@@ -88,7 +88,6 @@ func isGitHubActions() bool {
 func New() (*Logger, error) {
 	config := DefaultConfig()
 
-	// Check for debug mode from environment
 	if os.Getenv("DEBUG") == trueString || os.Getenv("RUNNER_DEBUG") == "1" {
 		config.Debug = true
 		config.Level = slog.LevelDebug
@@ -163,7 +162,6 @@ func NewWithConfig(config Config) (*Logger, error) {
 		handler = slog.NewJSONHandler(secureOutput, handlerOptions)
 	}
 
-	// Create main logger
 	l.logger = slog.New(handler)
 
 	// Create debug logger if enabled - use same output as main logger
@@ -798,7 +796,6 @@ func (l *Logger) SetLevel(level slog.Level) {
 		l.logger = slog.New(newHandler)
 	}
 
-	// Update config level for consistency
 	l.config.Level = level
 }
 

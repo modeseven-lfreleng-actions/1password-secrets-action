@@ -72,7 +72,6 @@ func NewValidator(config *ValidatorConfig) (*Validator, error) {
 		config = DefaultValidatorConfig()
 	}
 
-	// Validate the configuration itself
 	if err := validateConfig(config); err != nil {
 		return nil, fmt.Errorf("invalid validator configuration: %w", err)
 	}
@@ -174,7 +173,6 @@ func (v *Validator) ValidateOutputName(name string) error {
 		}
 	}
 
-	// Check reserved names
 	if reservedOutputNames[strings.ToLower(name)] {
 		return &ValidationError{
 			Field:   "name",
@@ -202,7 +200,6 @@ func (v *Validator) ValidateEnvName(name string) error {
 		}
 	}
 
-	// Check reserved prefixes
 	upperName := strings.ToUpper(name)
 	for _, prefix := range v.config.ReservedPrefixes {
 		if strings.HasPrefix(upperName, strings.ToUpper(prefix)) {
@@ -243,7 +240,6 @@ func (v *Validator) validateBasicName(name, nameType string) error {
 		}
 	}
 
-	// Check for forbidden characters
 	if strings.Contains(name, " ") {
 		return &ValidationError{
 			Field:   "name",
@@ -277,7 +273,6 @@ func (v *Validator) ValidateOutputValue(value string) error {
 		}
 	}
 
-	// Check length limits
 	if len(value) > v.config.MaxValueLength {
 		return &ValidationError{
 			Field:   "value",
@@ -297,7 +292,6 @@ func (v *Validator) ValidateOutputValue(value string) error {
 		}
 	}
 
-	// Check for forbidden patterns
 	for i, pattern := range v.config.ForbiddenPatterns {
 		if matched, _ := regexp.MatchString(pattern, value); matched {
 			return &ValidationError{
@@ -309,7 +303,6 @@ func (v *Validator) ValidateOutputValue(value string) error {
 		}
 	}
 
-	// Check for injection attack patterns
 	for _, pattern := range injectionPatterns {
 		if pattern.MatchString(value) {
 			return &ValidationError{
@@ -321,7 +314,6 @@ func (v *Validator) ValidateOutputValue(value string) error {
 		}
 	}
 
-	// Check line-related limits for multiline values
 	if strings.Contains(value, "\n") {
 		if err := v.validateMultilineValue(value); err != nil {
 			return err
@@ -335,7 +327,6 @@ func (v *Validator) ValidateOutputValue(value string) error {
 		}
 	}
 
-	// Run custom validators
 	for i, validator := range v.config.CustomValidators {
 		if err := validator("value", value); err != nil {
 			return &ValidationError{
@@ -430,7 +421,6 @@ func (v *Validator) ValidateBatch(outputs map[string]string, envVars map[string]
 		return err
 	}
 
-	// Validate all outputs
 	for name, value := range outputs {
 		if err := v.ValidateOutputName(name); err != nil {
 			return fmt.Errorf("output validation failed: %w", err)
@@ -440,7 +430,6 @@ func (v *Validator) ValidateBatch(outputs map[string]string, envVars map[string]
 		}
 	}
 
-	// Validate all environment variables
 	for name, value := range envVars {
 		if err := v.ValidateEnvName(name); err != nil {
 			return fmt.Errorf("environment variable validation failed: %w", err)
@@ -450,7 +439,6 @@ func (v *Validator) ValidateBatch(outputs map[string]string, envVars map[string]
 		}
 	}
 
-	// Check for naming conflicts
 	if err := v.validateNamingConflicts(outputs, envVars); err != nil {
 		return err
 	}
@@ -460,11 +448,9 @@ func (v *Validator) ValidateBatch(outputs map[string]string, envVars map[string]
 
 // validateNamingConflicts checks for conflicts between output and env var names
 func (v *Validator) validateNamingConflicts(outputs map[string]string, envVars map[string]string) error {
-	// Check for case-insensitive conflicts
 	outputNames := make(map[string]string)
 	envNames := make(map[string]string)
 
-	// Build case-insensitive maps
 	for name := range outputs {
 		lower := strings.ToLower(name)
 		if existing, exists := outputNames[lower]; exists {
@@ -491,7 +477,6 @@ func (v *Validator) validateNamingConflicts(outputs map[string]string, envVars m
 		envNames[lower] = name
 	}
 
-	// Check for conflicts between outputs and env vars
 	for name := range outputs {
 		lower := strings.ToLower(name)
 		if existing, exists := envNames[lower]; exists {
@@ -509,7 +494,6 @@ func (v *Validator) validateNamingConflicts(outputs map[string]string, envVars m
 
 // SanitizeValue sanitizes a value for safe output
 func (v *Validator) SanitizeValue(value string) string {
-	// Remove null bytes
 	sanitized := strings.ReplaceAll(value, "\x00", "")
 
 	// Remove other control characters except newlines and tabs

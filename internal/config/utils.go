@@ -158,7 +158,6 @@ func CreateConfigFromTemplate(templateName, configPath string, variables map[str
 		return fmt.Errorf("template '%s' not found", templateName)
 	}
 
-	// Create config from template
 	config := template.Template
 
 	// Apply variable substitutions if provided
@@ -174,7 +173,6 @@ func CreateConfigFromTemplate(templateName, configPath string, variables map[str
 		return fmt.Errorf("failed to create config directory: %w", err)
 	}
 
-	// Save configuration
 	if err := config.Save(configPath); err != nil {
 		return fmt.Errorf("failed to save configuration: %w", err)
 	}
@@ -195,7 +193,6 @@ func GetTemplate(name string) (Template, bool) {
 
 // MigrateConfig migrates a configuration to the latest version
 func MigrateConfig(configPath string) error {
-	// Load current configuration
 	config, err := LoadWithOptions(LoadOptions{
 		ConfigFile:   configPath,
 		IgnoreEnv:    true,
@@ -205,7 +202,6 @@ func MigrateConfig(configPath string) error {
 		return fmt.Errorf("failed to load configuration: %w", err)
 	}
 
-	// Get current version
 	currentVersion := getCurrentConfigVersion(configPath)
 	if currentVersion == "" {
 		currentVersion = "1.0.0" // Default for legacy configs
@@ -222,12 +218,10 @@ func MigrateConfig(configPath string) error {
 		}
 	}
 
-	// Save migrated configuration
 	if err := config.Save(configPath); err != nil {
 		return fmt.Errorf("failed to save migrated configuration: %w", err)
 	}
 
-	// Update version file
 	if err := updateConfigVersion(configPath, currentVersion); err != nil {
 		return fmt.Errorf("failed to update version: %w", err)
 	}
@@ -332,7 +326,6 @@ func ExportConfig(config *Config, format, outputPath string) error {
 		return fmt.Errorf("failed to marshal configuration: %w", err)
 	}
 
-	// Write to file
 	if err := os.WriteFile(outputPath, data, 0600); err != nil {
 		return fmt.Errorf("failed to write exported configuration: %w", err)
 	}
@@ -381,7 +374,6 @@ func ImportConfig(inputPath, configPath string) error {
 		return fmt.Errorf("imported configuration is invalid: %w", err)
 	}
 
-	// Save to destination
 	if err := config.Save(configPath); err != nil {
 		return fmt.Errorf("failed to save imported configuration: %w", err)
 	}
@@ -419,7 +411,6 @@ func CleanupOldConfigs(maxAge time.Duration) error {
 			continue
 		}
 
-		// Get file info
 		filePath := filepath.Join(configDir, name)
 		info, err := entry.Info()
 		if err != nil {
@@ -443,7 +434,6 @@ func BackupConfig(configPath string) (string, error) {
 		return "", fmt.Errorf("configuration file does not exist: %s", configPath)
 	}
 
-	// Create backup filename with timestamp
 	timestamp := time.Now().Format("20060102-150405")
 	backupPath := fmt.Sprintf("%s.%s.bak", configPath, timestamp)
 
@@ -477,7 +467,6 @@ func applyVariables(config *Config, variables map[string]string) error {
 		configStr = strings.ReplaceAll(configStr, placeholder, value)
 	}
 
-	// Parse back to config
 	if err := yaml.Unmarshal([]byte(configStr), config); err != nil {
 		return fmt.Errorf("failed to unmarshal config after variable substitution: %w", err)
 	}

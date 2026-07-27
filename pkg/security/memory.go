@@ -13,8 +13,7 @@ import (
 	"sync"
 )
 
-// SecureString represents a string that is stored in locked memory
-// and automatically zeroed when no longer needed
+// SecureString holds a string in locked memory and zeroes it on destruction.
 type SecureString struct {
 	data   []byte
 	locked bool
@@ -81,7 +80,6 @@ func NewSecureString(data []byte) (*SecureString, error) {
 		return ss, nil
 	}
 
-	// Check pool limits
 	if err := globalPool.checkAllocation(len(data)); err != nil {
 		return nil, err
 	}
@@ -90,11 +88,9 @@ func NewSecureString(data []byte) (*SecureString, error) {
 	pageSize := getPageSize()
 	alignedSize := alignToPage(len(data), pageSize)
 
-	// Create a copy of the data with alignment
 	secureData := make([]byte, alignedSize)
 	copy(secureData, data)
 
-	// Get unique ID
 	id := globalPool.getNextID()
 
 	ss := &SecureString{
@@ -116,7 +112,6 @@ func NewSecureString(data []byte) (*SecureString, error) {
 	// Set finalizer to ensure cleanup
 	runtime.SetFinalizer(ss, (*SecureString).destroy)
 
-	// Update pool tracking
 	globalPool.addAllocation(len(data), ss)
 
 	return ss, nil
@@ -310,7 +305,6 @@ func (ss *SecureString) Destroy() error {
 		_ = ss.unlockMemoryLocked() // Ignore errors during destruction
 	}
 
-	// Update pool tracking
 	globalPool.removeAllocation(originalSize, ss.id)
 
 	// Clear the data slice
