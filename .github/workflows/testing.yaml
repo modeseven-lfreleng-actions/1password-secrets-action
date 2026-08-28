@@ -605,10 +605,6 @@ jobs:
       - name: "Download dependencies"
         run: go mod download
 
-      - name: "Install benchstat tool"
-        run: |
-          go install golang.org/x/perf/cmd/benchstat@latest
-
       - name: "Run mock performance tests"
         run: |
           echo "Running mock-based performance tests..."
