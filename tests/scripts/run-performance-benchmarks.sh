@@ -210,11 +210,6 @@ check_prerequisites() {
         exit 1
     fi
 
-    # Check for benchstat tool (optional but recommended)
-    if ! command -v benchstat &> /dev/null; then
-        log_warning "benchstat tool not found - install with: go install golang.org/x/perf/cmd/benchstat@latest"
-    fi
-
     log_success "Prerequisites check passed"
 }
 
@@ -365,6 +360,7 @@ compare_results() {
             log_success "Comparison report generated"
         else
             log_warning "benchstat not available - manual comparison required"
+            log_warning "Install with: go install golang.org/x/perf/cmd/benchstat@v0.0.0-20260813145340-fd4a688df892"
         fi
     fi
 }

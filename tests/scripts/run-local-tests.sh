@@ -172,11 +172,6 @@ check_prerequisites() {
         log_warning "Install with: brew install 1password-cli"
     fi
 
-    # Check for benchstat tool if running performance tests
-    if [[ "$RUN_PERFORMANCE" == "true" ]] && ! command -v benchstat &> /dev/null; then
-        log_warning "benchstat tool not found - install with: go install golang.org/x/perf/cmd/benchstat@latest"
-    fi
-
     log_success "Prerequisites check passed"
 }
 

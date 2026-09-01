@@ -444,11 +444,6 @@ jobs:
           # Verify performance tests compile
           go test -c -tags=performance ./tests/performance/...
 
-      - name: "Install benchstat tool"
-        run: |
-          # Install benchstat tool
-          go install golang.org/x/perf/cmd/benchstat@latest
-
       - name: "Run performance tests"
         env:
           OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
