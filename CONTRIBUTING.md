@@ -36,7 +36,7 @@ unacceptable behavior to <conduct@linuxfoundation.org>.
 
 Before contributing, ensure you have:
 
-- **Go 1.23+**: Required for building and testing
+- **Go 1.26+**: Required for building and testing
 - **Git**: For version control
 - **GitHub Account**: For submitting pull requests
 - **1Password Account**: For testing (service account required)
@@ -82,7 +82,7 @@ Before contributing, ensure you have:
 
 ### Required Tools
 
-- **Go 1.23+**: Primary development language
+- **Go 1.26+**: Primary development language
 - **golangci-lint**: Code linting and static analysis
 - **gosec**: Security-focused static analysis
 - **pre-commit**: Git hooks for code quality

@@ -71,7 +71,7 @@ graph TD
 
 ```yaml
 - Run on: Ubuntu 24.04, macOS 14
-- Go versions: 1.21, 1.22, 1.23
+- Go versions: 1.26, 1.27
 - Timeout: 15 minutes
 - Coverage: Enabled with codecov upload
 ```
@@ -90,7 +90,7 @@ go test -v -coverprofile coverage.out -covermode=atomic -timeout=10m ./internal/
 
 ```yaml
 - Run on: Ubuntu 24.04, macOS 14
-- Go versions: 1.23 (latest)
+- Go versions: 1.26, 1.27
 - Timeout: 20 minutes
 - Continue on error: true
 - Depends on: functional-tests

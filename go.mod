@@ -2,6 +2,8 @@ module github.com/modeseven-lfreleng-actions/1password-secrets-action
 
 go 1.26.0
 
+toolchain go1.26.10
+
 require (
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.12.1

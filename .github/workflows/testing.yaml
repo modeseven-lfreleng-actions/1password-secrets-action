@@ -130,7 +130,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-14]
-        go-version: ['1.25', '1.26']
+        go-version: ['1.26', '1.27']
     steps:
       - name: "Checkout repository"
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -204,7 +204,7 @@ jobs:
 
       - name: "Upload coverage to Codecov"
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
-        if: matrix.os == 'ubuntu-latest' && matrix.go-version == '1.26'
+        if: matrix.os == 'ubuntu-latest' && matrix.go-version == '1.27'
         with:
           files: coverage.out
           flags: unittests
@@ -224,7 +224,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-14]
-        go-version: ['1.25', '1.26']
+        go-version: ['1.26', '1.27']
     steps:
       - name: "Checkout repository"
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -366,12 +366,12 @@ jobs:
     permissions:
       contents: read
     timeout-minutes: 20
-    continue-on-error: ${{ matrix.go-version != '1.26' }}
+    continue-on-error: ${{ matrix.go-version != '1.27' }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-14]
-        go-version: ['1.25', '1.26']
+        go-version: ['1.26', '1.27']
     steps:
       - name: "Checkout repository"
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -447,7 +447,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-14]
-        go-version: ['1.25', '1.26']
+        go-version: ['1.26', '1.27']
     steps:
       - name: "Checkout repository"
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -527,7 +527,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        go-version: ['1.25', '1.26']
+        go-version: ['1.26', '1.27']
     steps:
       - name: "Checkout repository"
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -558,7 +558,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        go-version: ['1.25', '1.26']
+        go-version: ['1.26', '1.27']
     steps:
       - name: "Checkout repository"
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -589,7 +589,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        go-version: ['1.25', '1.26']
+        go-version: ['1.26', '1.27']
     steps:
       - name: "Checkout repository"
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -621,7 +621,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        go-version: ['1.25', '1.26']  # Only latest for PR security checks
+        go-version: ['1.26', '1.27']
     steps:
       - name: "Checkout repository"
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

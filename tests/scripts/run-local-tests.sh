@@ -62,7 +62,7 @@ OPTIONS:
 
 PREREQUISITES:
     - tests/github_secrets.txt must exist with real GitHub CI credentials
-    - Go 1.25+ installed
+    - Go 1.26+ installed
     - 1Password CLI installed (for integration tests)
 
 EXAMPLES:
