@@ -9,3 +9,17 @@ paths:
       # Ignore deliberate test failure
       - 'input "invalid_input" is not defined in action .+'
       - 'missing input "input" which is required by action .+'
+      # GitHub's self-repository syntax (July 2026) resolves 'uses: $/'
+      # to this repository at the running commit, and zizmor's
+      # self-repository audit (v1.30+) reports the older './' form.
+      # actionlint v1.7.12 predates the syntax and rejects a bare '$/',
+      # the action at the repository root, which GitHub accepts and runs.
+      # The ignore also skips input and output checks for those steps.
+      # The closing quote sits right after '$/', so malformed forms such
+      # as '$//' are still reported. Drop it once the pinned actionlint
+      # understands the syntax (actions-template#253).
+      - 'specifying action "\$/" in invalid format because ref is missing'
+  .github/workflows/integration.yaml:
+    ignore:
+      # Same as testing.yaml: a bare '$/' self-repository reference.
+      - 'specifying action "\$/" in invalid format because ref is missing'

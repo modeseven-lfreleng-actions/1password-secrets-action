@@ -151,7 +151,7 @@ jobs:
 
       - name: "Test single secret retrieval (live credentials)"
         id: single-secret
-        uses: ./
+        uses: $/
         with:
           token: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
           vault: ${{ secrets.OP_VAULT }}
@@ -181,7 +181,7 @@ jobs:
 
       - name: "Test multiple secrets (live credentials)"
         id: multiple-secrets
-        uses: ./
+        uses: $/
         with:
           token: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
           vault: ${{ secrets.OP_VAULT }}
@@ -223,7 +223,7 @@ jobs:
 
       - name: "Test output return type (live credentials)"
         id: output-test
-        uses: ./
+        uses: $/
         with:
           token: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
           vault: ${{ secrets.OP_VAULT }}
@@ -255,7 +255,7 @@ jobs:
 
       - name: "Test invalid vault with live credentials"
         id: invalid-vault
-        uses: ./
+        uses: $/
         continue-on-error: true
         with:
           token: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
@@ -288,7 +288,7 @@ jobs:
 
       - name: "Test single secret performance"
         id: perf-single
-        uses: ./
+        uses: $/
         with:
           token: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
           vault: ${{ secrets.OP_VAULT }}
@@ -308,7 +308,7 @@ jobs:
           fi
 
       - name: "Test multiple secrets performance"
-        uses: ./
+        uses: $/
         with:
           token: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
           vault: ${{ secrets.OP_VAULT }}
@@ -340,7 +340,7 @@ jobs:
 
       - name: "Test secret masking with live credentials"
         id: secret-masking
-        uses: ./
+        uses: $/
         with:
           token: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
           vault: ${{ secrets.OP_VAULT }}
@@ -373,7 +373,7 @@ jobs:
 
       - name: "Test complex workflow scenario"
         id: complex
-        uses: ./
+        uses: $/
         with:
           token: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
           vault: ${{ secrets.OP_VAULT }}
